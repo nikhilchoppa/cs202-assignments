@@ -32,3 +32,6 @@ The results of this project suggest that machine learning can be effectively use
 
 ## Conclusion
 In this project, we have demonstrated the application of machine learning to compare and optimize compiler performance by implementing a linear scan register allocation method alongside the traditional graph coloring method. We have shown that machine learning can be used to accurately predict and compare the performance of different register allocation techniques, providing valuable insights for compiler optimization. Our findings indicate that the linear scan method generally outperforms the graph coloring method, suggesting that linear scan register allocation could be a more efficient technique for optimizing compiler performance.
+
+### References:
+Linear Scan Register Allocation: "https://dl.acm.org/doi/pdf/10.1145/330249.330250"
