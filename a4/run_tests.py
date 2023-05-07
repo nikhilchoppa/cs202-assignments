@@ -5,7 +5,7 @@ import os
 import traceback
 import sys
 import subprocess
-from compiler import run_compiler
+from solution import run_compiler
 from interpreter import eval_Lif
 from cs202_support import eval_x86
 

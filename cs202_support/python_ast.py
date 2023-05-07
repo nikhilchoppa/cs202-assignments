@@ -34,6 +34,7 @@ class Return(Stmt):
 
 @dataclass(frozen=True, eq=True)
 class Assign(Stmt):
+
     name: str
     rhs: Expr
 

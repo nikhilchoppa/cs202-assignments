@@ -2,73 +2,89 @@ from dataclasses import dataclass
 from typing import List, Set, Dict, Tuple
 from cs202_support.python import AST
 
+
 ##################################################
 @dataclass(frozen=True, eq=True)
 class Expr(AST):
     pass
 
+
 @dataclass(frozen=True, eq=True)
 class Atm(Expr):
     pass
+
 
 @dataclass(frozen=True, eq=True)
 class Prim(Expr):
     op: str
     args: List[Atm]
 
+
 @dataclass(frozen=True, eq=True)
 class Call(Expr):
     func: Atm
     args: List[Atm]
+
 
 @dataclass(frozen=True, eq=True)
 class Allocate(Expr):
     num_bytes: int
     tuple_type: any
 
+
 @dataclass(frozen=True, eq=True)
 class Constant(Atm):
     val: any
 
+
 @dataclass(frozen=True, eq=True)
 class Var(Atm):
     var: str
+
 
 ##################################################
 @dataclass(frozen=True, eq=True)
 class Stmt(AST):
     pass
 
+
 @dataclass(frozen=True, eq=True)
 class Return(Stmt):
     exp: Atm
+
 
 @dataclass(frozen=True, eq=True)
 class Collect(Stmt):
     num_bytes: int
 
+
 @dataclass(frozen=True, eq=True)
 class Print(Stmt):
     arg: Atm
+
 
 @dataclass(frozen=True, eq=True)
 class Assign(Stmt):
     var: str
     exp: Expr
 
+
 @dataclass(frozen=True, eq=True)
 class Return(Stmt):
     exp: Atm
 
+
 @dataclass(frozen=True, eq=True)
 class Goto(Stmt):
     label: str
+
 
 @dataclass(frozen=True, eq=True)
 class If(Stmt):
     test: Expr
     then_branch: Goto
     else_branch: Goto
+
 
 ##################################################
 # @dataclass(frozen=True, eq=True)
@@ -81,9 +97,11 @@ class CFunctionDef(AST):
     args: List[str]
     blocks: Dict[str, List[Stmt]]
 
+
 @dataclass(frozen=True, eq=True)
 class CProgram(AST):
     defs: List[CFunctionDef]
+
 
 def print_program(program: CProgram):
     def print_exp(e: Expr):
@@ -117,7 +135,6 @@ def print_program(program: CProgram):
             case _:
                 raise Exception('unknown statement:', s)
 
-
     output_lines = ''
     for fundef in program.defs:
         arg_names = ', '.join(fundef.args)
@@ -127,5 +144,5 @@ def print_program(program: CProgram):
             for s in stmts:
                 output_lines += '    ' + print_stmt(s) + '\n'
         output_lines += '\n'
-            
+
     return output_lines

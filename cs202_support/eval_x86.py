@@ -352,6 +352,7 @@ class X86Emulator:
 
             elif instr.data == 'indirect_callq':
                 v = self.eval_arg(instr.children[0])
+                print(f"v = {v}, type = {type(v)}")
                 assert isinstance(v, FunPointer)
                 target = v.fun_name
                 self.eval_instrs(blocks[target], blocks, output)

@@ -1,4 +1,3 @@
-from _ast import *
 from typing import Set, Dict
 import itertools
 import sys
@@ -94,7 +93,6 @@ def typecheck(program: Program) -> Program:
         env = {}
         for s in ss:
             tc_stmt(s, env)
-
     tc_stmts(program.stmts)
 
     return program
@@ -118,21 +116,22 @@ def rco(prog: Program) -> Program:
     """
 
     def rco_stmt(stmt: Stmt, bindings: Dict[str, Expr]) -> Stmt:
-        match stmt:
-            case Assign(x, e1):
-                new_e1 = rco_exp(e1, bindings)
-                return Assign(x, new_e1)
-            case Print(e1):
-                new_e1 = rco_exp(e1, bindings)
-                return Print(new_e1)
-            case If(condition, then_stmts, else_stmts):
-                return If(rco_exp(condition, bindings),
-                          rco_stmts(then_stmts),
-                          rco_stmts(else_stmts))
-            case _:
-                raise Exception('rco_stmt', stmt)
+            match stmt:
+                case Assign(x, e1):
+                    new_e1 = rco_exp(e1, bindings)
+                    return Assign(x, new_e1)
+                case Print(e1):
+                    new_e1 = rco_exp(e1, bindings)
+                    return Print(new_e1)
+                case If(condition, then_stmts, else_stmts):
+                    return If(rco_exp(condition,bindings),
+                              rco_stmts(then_stmts),
+                              rco_stmts(else_stmts))
+                case _:
+                    raise Exception('rco_stmt', stmt)
 
     def rco_stmts(stmts: List[Stmt]) -> List[Stmt]:
+
         new_stmts = []
 
         for stmt in stmts:
@@ -153,7 +152,7 @@ def rco(prog: Program) -> Program:
             case Constant(i):
                 return Constant(i)
             case Prim(op, args):
-                new_args = [rco_exp(e, bindings) for e in args]
+                new_args = [rco_exp(arg, bindings) for arg in args]
                 new_e = Prim(op, new_args)
                 new_v = gensym('tmp')
                 bindings[new_v] = new_e
@@ -162,6 +161,8 @@ def rco(prog: Program) -> Program:
                 raise Exception('rco_exp', e)
 
     return Program(rco_stmts(prog.stmts))
+
+
 
 
 ##################################################
@@ -199,10 +200,10 @@ def explicate_pred(prog: Program) -> cif.CProgram:
     def ec_expr(e: Expr) -> cif.Expr:
         match e:
             case Prim(op, args):
-                new_args = [ec_expr(arg) for arg in args]
-                return cif.Prim(op, new_args)
+                new_args = [ec_atm(a) for a in args]
+                return ec_atm(op, new_args)
             case _:
-                return ec_atm(e)
+                raise Exception('ec_expr', e)
 
     def ec_pred(p: Expr, if_label: str, else_label: str) -> cif.Stmt:
         match p:
@@ -254,12 +255,7 @@ def explicate_pred(prog: Program) -> cif.CProgram:
 #        | If(Expr, Goto(label), Goto(label)) | Goto(label) | Return(Expr)
 # Stmts ::= List[Stmt]
 # Cif   ::= CProgram(Dict[label, Stmts])
-# TODO: can use these
-# x86.NamedInstr('set',['e', x86.ByteReg('al')])
-# x86.NamedInstr('sete', [x86.ByteReg('al')])
-#
-# x86.Set('e',x86.ByteReg('al') )
-# x86.NamedInstr('jmp label', [])
+
 def select_instructions(prog: cif.CProgram) -> x86.X86Program:
     def si_atm(a: cif.Expr) -> x86.Arg:
         match a:
@@ -291,7 +287,7 @@ def select_instructions(prog: cif.CProgram) -> x86.X86Program:
             instrs.extend(si_stmt(stmt))
         return instrs
 
-    def si_pred(p: cif.Expr, label: str) -> List[x86.Instr]:
+    def si_pred(p: cif.Expr, label: str) -> List[cif.x86.Instr]:
         match p:
             case cif.Prim('eq', [lhs, rhs]):
                 return [si_atm(lhs), 'cmpq', si_atm(rhs), 'je', label]
@@ -326,7 +322,6 @@ def select_instructions(prog: cif.CProgram) -> x86.X86Program:
 
     return x86.X86Program(x86_blocks)
 
-
 ##################################################
 # allocate-registers
 ##################################################
@@ -342,7 +337,6 @@ Color = int
 Coloring = Dict[x86.Var, Color]
 Saturation = Set[Color]
 
-
 def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     """
     Assigns homes to variables in the input program. Allocates registers and
@@ -354,7 +348,6 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     """
 
     all_vars: Set[x86.Var] = set()
-
     live_after_sets: Dict[str, List[Set[x86.Var]]] = {}
     live_before_sets: Dict[str, Set[x86.Var]] = {}
 
@@ -409,22 +402,20 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     # for that label from prog.blocks
     # save the live-after sets in the global dict
     # save the live-before set in the global dict
-    def ul_block(label: str) -> List[Set[x86.Var]]:
+    def ul_block(instrs: List[x86.Instr]) -> List[Set[x86.Var]]:
         current_live_after: Set[x86.Var] = set()
-        instrs = program.blocks[label]
 
-        local_live_after_sets = []
+        live_after_sets = []
         for i in reversed(instrs):
-            local_live_after_sets.append(current_live_after)
+            live_after_sets.append(current_live_after)
             current_live_after = ul_instr(i, current_live_after)
 
-        live_before_sets[label] = list(reversed(local_live_after_sets))
-        live_after_sets[label] = current_live_after
-        return list(reversed(local_live_after_sets))
+        return list(reversed(live_after_sets))
 
-    # --------------------------------------------------
-    # interference graph
-    # --------------------------------------------------
+        # --------------------------------------------------
+        # interference graph
+        # --------------------------------------------------
+
     def bi_instr(e: x86.Instr, live_after: Set[x86.Var], graph: InterferenceGraph):
         for v1 in writes_of(e):
             for v2 in live_after:
@@ -434,9 +425,10 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
         for instr, live_after in zip(instrs, live_afters):
             bi_instr(instr, live_after, graph)
 
-    # --------------------------------------------------
-    # graph coloring
-    # --------------------------------------------------
+        # --------------------------------------------------
+        # graph coloring
+        # --------------------------------------------------
+
     def color_graph(local_vars: Set[x86.Var], interference_graph: InterferenceGraph) -> Coloring:
         coloring: Coloring = {}
 
@@ -465,9 +457,10 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
 
         return coloring
 
-    # --------------------------------------------------
-    # assigning homes
-    # --------------------------------------------------
+        # --------------------------------------------------
+        # assigning homes
+        # --------------------------------------------------
+
     def align(num_bytes: int) -> int:
         if num_bytes % 16 == 0:
             return num_bytes
@@ -483,7 +476,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
             case x86.Reg(r):
                 return a
             case x86.Var(x):
-                return homes[x]
+                return homes[a]
             case _:
                 raise Exception('ah_arg', a)
 
@@ -500,11 +493,12 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     def ah_block(instrs: List[x86.Instr]) -> List[x86.Instr]:
         return [ah_instr(i) for i in instrs]
 
-    # --------------------------------------------------
-    # main body of the pass
-    # --------------------------------------------------
+        # --------------------------------------------------
+        # main body of the pass
+        # --------------------------------------------------
 
-    # Step 1: Perform liveness analysis
+        # Step 1: Perform liveness analysis
+
     blocks = program.blocks
     # live_after_sets = {label: ul_block(block) for label, block in blocks.items()}
     ul_block('start')
@@ -569,31 +563,7 @@ def patch_instructions(program: x86.X86Program) -> x86.X86Program:
     :return: A patched x86 program.
     """
 
-    def pi_instr(e: x86.Instr) -> List[x86.Instr]:
-        match e:
-            case x86.NamedInstr('movq', [x86.Deref(_, _), x86.Deref(_, _)]):
-                return [x86.NamedInstr('movq', [e.args[0], x86.Reg('rax')]),
-                        x86.NamedInstr('movq', [x86.Reg('rax'), e.args[1]])]
-            case x86.NamedInstr('addq', [x86.Deref(_, _), x86.Deref(_, _)]):
-                return [x86.NamedInstr('movq', [e.args[0], x86.Reg('rax')]),
-                        x86.NamedInstr('addq', [x86.Reg('rax'), e.args[1]])]
-            case x86.NamedInstr('cmpq', [a1, x86.Immediate(i)]):
-                return [x86.NamedInstr('movq', [a1, x86.Reg('rax')]),
-                        x86.NamedInstr('cmpq', [x86.Reg('rax'), x86.Immediate(i)])]
-            case _:
-                if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp, x86.NamedInstr)):
-                    return [e]
-                else:
-                    raise Exception('pi_instr', e)
-
-    def pi_block(instrs: List[x86.Instr]) -> List[x86.Instr]:
-        new_instrs = [pi_instr(i) for i in instrs]
-        flattened = [val for sublist in new_instrs for val in sublist]
-        return flattened
-
-    blocks = program.blocks
-    new_blocks = {label: pi_block(block) for label, block in blocks.items()}
-    return x86.X86Program(new_blocks, stack_space=program.stack_space)
+    pass
 
 
 ##################################################
@@ -614,19 +584,7 @@ def prelude_and_conclusion(program: x86.X86Program) -> x86.X86Program:
     :return: An x86 program, with prelude and conclusion.
     """
 
-    prelude = [x86.NamedInstr('pushq', [x86.Reg('rbp')]),
-               x86.NamedInstr('movq', [x86.Reg('rsp'), x86.Reg('rbp')]),
-               x86.NamedInstr('subq', [x86.Immediate(program.stack_space),
-                                       x86.Reg('rsp')]),
-               x86.Jmp('start')]
-
-    conclusion = [x86.NamedInstr('addq', [x86.Immediate(program.stack_space), x86.Reg('rsp')]),
-                  x86.NamedInstr('popq', [x86.Reg('rbp')]),
-                  x86.Retq()]
-
-    program.blocks['main'] = prelude + program.blocks['main']
-    program.blocks['conclusion'] = conclusion
-    return x86.X86Program(program.blocks, stack_space=program.stack_space)
+    pass
 
 
 ##################################################
@@ -699,5 +657,5 @@ if __name__ == '__main__':
                     output_file.write(x86_program)
 
             except:
-                print('Error during compilation! **************************************************')
+                print('Error during compilation! ******************')
                 traceback.print_exception(*sys.exc_info())

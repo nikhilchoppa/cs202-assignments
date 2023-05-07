@@ -1,4 +1,3 @@
-import pprint
 from collections import defaultdict
 
 from typing import List, Set, Dict, Tuple, DefaultDict
@@ -14,7 +13,6 @@ from interference_graph import InterferenceGraph
 gensym_num = 0
 global_logging = False
 
-
 def log(label, value):
     if global_logging:
         print()
@@ -23,10 +21,8 @@ def log(label, value):
         print(value)
         print(f'--------------------------------------------------')
 
-
 def log_ast(label, value):
     log(label, print_ast(value))
-
 
 def gensym(x):
     """
@@ -161,9 +157,6 @@ Saturation = Set[Color]
 # Instr ::= NamedInstr(instr_name, [Arg]) | Callq(str) | Retq()
 # X86 ::= X86Program(Dict[str, [Instr]])
 
-''' 3 Objectives are libeness analysis, interference graph, and graph coloring. '''
-
-
 def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     """
     Assigns homes to variables in the input program. Allocates registers and
@@ -173,160 +166,112 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     :return: An x86 program, annotated with the number of bytes needed in stack
     locations.
     """
-    homes: Dict[x86.Var, x86.Arg] = {}
+
+    all_vars: Set[x86.Var] = set()
 
     # --------------------------------------------------
     # utilities
     # --------------------------------------------------
-    all_vars = set()
-
-    def vars_of(i: x86.Arg) -> Set[x86.Var]:
-        # return the set of variables in argument i
-        match i:
+    def vars_arg(a: x86.Arg) -> Set[x86.Var]:
+        match a:
+            case x86.Immediate(i):
+                return set()
+            case x86.Reg(r):
+                return set()
             case x86.Var(x):
-                all_vars.add(i)
-                return {x86.Var(x)}
+                all_vars.add(a)
+                return {a}
             case _:
-                return set()  # Must use set() since {} is a dictionary, even though used for both
+                raise Exception('ul_arg', a)
 
     def reads_of(i: x86.Instr) -> Set[x86.Var]:
-        # return the set of variables read by instruction i
         match i:
-            case x86.NamedInstr('addq', [a1, a2]):  # Destination is always second argument
-                # addq reads both arguments, so return the set of vars in a1 and a2
-                return vars_of(a1).union(vars_of(a2))
-
-            case x86.NamedInstr('movq', [a1, a2]):
-                # movq reads the second argument, so return the set of vars in a2
-                return vars_of(a2)
-            case x86.Callq(_):
-                # callq reads all the arguments, so return the set of vars in all the arguments
-                return set()
-            case x86.Retq():
-                # retq reads no arguments, so return an empty set
-                return set()
+            case x86.NamedInstr('movq', [e1, e2]):
+                return vars_arg(e1)
+            case x86.NamedInstr('addq', [e1, e2]):
+                return vars_arg(e1).union(vars_arg(e2))
             case _:
-                raise Exception("reads_of", i)
+                return set()
 
     def writes_of(i: x86.Instr) -> Set[x86.Var]:
-        # return the set of variables written by instruction i
         match i:
-            case x86.NamedInstr('addq', [a1, a2]):  # Destination is always second argument
-                # addq writes the second argument, so return the set of vars in a2
-                return vars_of(a2)
-            case x86.NamedInstr('movq', [a1, a2]):
-                # movq writes the first argument, so return the set of vars in a1
-                return vars_of(a1)
-            case x86.Callq(_):
-                # callq writes no arguments, so return an empty set
-                return set()
-            case x86.Retq():
-                # retq writes no arguments, so return an empty set
-                return set()
+            case x86.NamedInstr('movq', [e1, e2]):
+                return vars_arg(e2)
+            case x86.NamedInstr('addq', [e1, e2]):
+                return vars_arg(e2)
             case _:
-                raise Exception("writes_of", i)
+                return set()
 
     # --------------------------------------------------
     # liveness analysis
     # --------------------------------------------------
     def ul_instr(i: x86.Instr, live_after: Set[x86.Var]) -> Set[x86.Var]:
-        # given instruction k+1 and the live-after set for instruction k+1,
-        # produce the live-after set for instruction k
-        # 𝐿𝑎𝑓𝑡𝑒𝑟(𝑘)=(𝐿𝑎𝑓𝑡𝑒𝑟(𝑘+1)−𝑊(𝑘+1))∪𝑅(𝑘+1) <- this is the live_after parameter being passed in
-
         return live_after.difference(writes_of(i)).union(reads_of(i))
 
     def ul_block(instrs: List[x86.Instr]) -> List[Set[x86.Var]]:
-        # - start with empty list of live-after sets
-        # - start with empty current live-after set
-        # - loop over instructions in reverse order
-        #     - call 'ul_instr' to get the next live-after set
-        #     - add it to the list
-        # - at the end, reverse the list of live-after sets and return it
+        current_live_after: Set[x86.Var] = set()
+
         live_after_sets = []
-        current_live_after = set()
-        current_live_before = set()
         for i in reversed(instrs):
-            current_live_after = ul_instr(i, current_live_after)
-            # print("Current Live After: ", current_live_after)
-
-            current_live_after = current_live_after.difference(current_live_before)
-            # print("Difference After: ", current_live_after)
-            current_live_before = current_live_after
-            # print("Live Before: ", current_live_before)
-            # print(" ")
             live_after_sets.append(current_live_after)
+            current_live_after = ul_instr(i, current_live_after)
 
-        return list(reversed(live_after_sets))  # reversed is a generator, so must be cast to a list
+        return list(reversed(live_after_sets))
 
     # --------------------------------------------------
     # interference graph
     # --------------------------------------------------
-        # Idea: start with empty graph
-        # process each instruction
-        # add an edge between vars written by the instruction and vars in the live-after set of the instruction
     def bi_instr(e: x86.Instr, live_after: Set[x86.Var], graph: InterferenceGraph):
         for v1 in writes_of(e):
             for v2 in live_after:
                 graph.add_edge(v1, v2)
 
     def bi_block(instrs: List[x86.Instr], live_afters: List[Set[x86.Var]], graph: InterferenceGraph):
-        for i in range(0, len(instrs)):
-            bi_instr(instrs[i], live_afters[i], graph)
+        for instr, live_after in zip(instrs, live_afters):
+            bi_instr(instr, live_after, graph)
 
     # --------------------------------------------------
     # graph coloring
     # --------------------------------------------------
-    # modified color_graph function with move biasing based implementation
     def color_graph(local_vars: Set[x86.Var], interference_graph: InterferenceGraph) -> Coloring:
-        # First, sort the variables in descending order by the degree of the corresponding node in the interference
-        # graph. This will be used to break ties in the move biasing step.
-        vars_sorted = sorted(local_vars, key=lambda v: -len(interference_graph.neighbors(v)))
+        coloring: Coloring = {}
 
-        # Allocate registers to variables in the order determined by vars_sorted.
-        color_map = {}
-        available_colors = list(range(len(constants.caller_saved_registers)))
-        for v in vars_sorted:
-            # Get the set of colors that are not already assigned to interfering variables.
-            neighbor_colors = {color_map[n] for n in interference_graph.neighbors(v) if n in color_map}
-            available_colors = list(set(available_colors) - neighbor_colors)
+        to_color = local_vars.copy()
 
-            # If there are available colors, assign one to the variable.
-            if available_colors:
-                color_map[v] = available_colors.pop(0)
-            else:
-                # Otherwise, find a variable to spill, preferring one that can be moved to a free register.
-                # First, find the set of interfering variables that have not yet been colored.
-                neighbors = set(interference_graph.neighbors(v)) & set(vars_sorted) - set(color_map.keys())
+        # Saturation sets start out empty
+        saturation_sets = {x: set() for x in local_vars}
 
-                # Now, find the set of free registers.
-                free_registers = set(constants.caller_saved_registers) - set(color_map.values())
+        # Loop until we are finished coloring
+        while to_color:
+            # Find the variable x with the largest saturation set
+            x = max(to_color, key=lambda x: len(saturation_sets[x]))
 
-                # Find a variable in the neighbors set that can be moved to a free register.
-                can_move = []
-                for n in neighbors:
-                    if len(interference_graph.neighbors(n)) < len(free_registers):
-                        can_move.append(n)
+            # Remove x from the variables to color
+            to_color.remove(x)
 
-                # Choose the variable to spill. If there are variables that can be moved to a free register,
-                # choose the one with the most interfering neighbors. Otherwise, choose the one with the fewest
-                # available colors (i.e., the one that will likely require the fewest spills).
-                if not neighbors:
-                    continue
+            # Find the smallest color not in x's saturation set
+            x_color = next(i for i in itertools.count() if i not in saturation_sets[x])
 
-                if can_move:
-                    to_spill = max(can_move, key=lambda n: len(interference_graph.neighbors(n)))
-                else:
-                    to_spill = min(neighbors, key=lambda n: len(set(constants.caller_saved_registers) - set(color_map[c] for c in interference_graph.neighbors(n))))
+            # Assign x's color
+            coloring[x] = x_color
 
-                # Spill the variable and assign its color to the current variable.
-                color_map[v] = color_map[to_spill]
-                del color_map[to_spill]
+            # Add x's color to the saturation sets of its neighbors
+            for y in interference_graph.neighbors(x):
+                saturation_sets[y].add(x_color)
 
-        return color_map
+        return coloring
 
     # --------------------------------------------------
     # assigning homes
+    # --------------------------------------------------
+    def align(num_bytes: int) -> int:
+        if num_bytes % 16 == 0:
+            return num_bytes
+        else:
+            return num_bytes + (16 - (num_bytes % 16))
+
+    homes: Dict[str, x86.Arg] = {}
+
     def ah_arg(a: x86.Arg) -> x86.Arg:
         match a:
             case x86.Immediate(i):
@@ -334,12 +279,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
             case x86.Reg(r):
                 return a
             case x86.Var(x):
-                # we will always know the home for x
-                # the whole point of register allocation was to pre-populate homes
-                # with a home for every single variable
-                # you can delete the else case
-                return homes[x86.Var(x)]
-
+                return homes[a]
             case _:
                 raise Exception('ah_arg', a)
 
@@ -362,24 +302,20 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
 
     # Step 1: Perform liveness analysis
     blocks = program.blocks
-    main_instrs = blocks['main']  # Can use, only one block this assignment, but not for future assignments
-    live_after_sets = {label: ul_block(block) for label, block in blocks.items()}  # call ul_block
+    live_after_sets = {label: ul_block(block) for label, block in blocks.items()}
     log_ast('live-after sets', live_after_sets)
 
     # Step 2: Build the interference graph
     interference_graph = InterferenceGraph()
-    for label, block in blocks.items():
-        bi_block(block, live_after_sets[label], interference_graph)
-    # Where I want to call bi_block
+
+    for label in blocks.keys():
+        bi_block(blocks[label], live_after_sets[label], interference_graph)
+
     log_ast('interference graph', interference_graph)
 
     # Step 3: Color the graph
-    coloring = color_graph(local_vars=all_vars, interference_graph=interference_graph)
-    for v in all_vars:
-        if v not in coloring:
-            coloring[v] = 0
-
-
+    coloring = color_graph(all_vars, interference_graph)
+    colors_used = set(coloring.values())
     log('coloring', coloring)
 
     # Defines the set of registers to use
@@ -390,23 +326,16 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     stack_locations_used = 0
 
     # Step 4.1: Map colors to locations (the "color map")
-    # For each color in 'coloring', add a mapping in color_map to a location
-    # start with caller-saved registers, use callee-saved registers when you run out
-    caller_saved_registers = constants.caller_saved_registers
-    callee_saved_registers = constants.callee_saved_registers
-    color_map = {}
-    stack_locations_used = 0
-
-    for color in set(coloring.values()):
-        if color < len(caller_saved_registers):
-            color_map[color] = x86.Reg(caller_saved_registers[color])
+    for color in colors_used:
+        if available_registers != []:
+            r = available_registers.pop()
+            color_map[color] = x86.Reg(r)
         else:
-            # Use a callee-saved register
-            color_map[color] = x86.Reg(callee_saved_registers[color - len(caller_saved_registers)])
+            offset = stack_locations_used+1
+            color_map[color] = x86.Deref('rbp', -(offset * 8))
             stack_locations_used += 1
 
     # Step 4.2: Compose the "coloring" with the "color map" to get "homes"
-    homes = {}
     for v in all_vars:
         homes[v] = color_map[coloring[v]]
     log('homes', homes)
@@ -414,8 +343,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     # Step 5: replace variables with their homes
     blocks = program.blocks
     new_blocks = {label: ah_block(block) for label, block in blocks.items()}
-    stack_space = stack_locations_used * 8  # something based on stack_locations_used
-    return x86.X86Program(new_blocks, stack_space=stack_space)
+    return x86.X86Program(new_blocks, stack_space = align(8 * stack_locations_used))
 
 
 ##################################################
@@ -450,7 +378,7 @@ def patch_instructions(program: x86.X86Program) -> x86.X86Program:
 
     blocks = program.blocks
     new_blocks = {label: pi_block(block) for label, block in blocks.items()}
-    return x86.X86Program(new_blocks, stack_space=program.stack_space)
+    return x86.X86Program(new_blocks, stack_space = program.stack_space)
 
 
 ##################################################
@@ -465,9 +393,9 @@ def prelude_and_conclusion(program: x86.X86Program) -> x86.X86Program:
     """
 
     prelude = [x86.NamedInstr('pushq', [x86.Reg('rbp')]),
-               x86.NamedInstr('movq', [x86.Reg('rsp'), x86.Reg('rbp')]),
-               x86.NamedInstr('subq', [x86.Immediate(program.stack_space),
-                                       x86.Reg('rsp')])]
+               x86.NamedInstr('movq',  [x86.Reg('rsp'), x86.Reg('rbp')]),
+               x86.NamedInstr('subq',  [x86.Immediate(program.stack_space),
+                                        x86.Reg('rsp')])]
 
     conclusion = [x86.NamedInstr('addq', [x86.Immediate(program.stack_space),
                                           x86.Reg('rsp')]),
@@ -475,7 +403,7 @@ def prelude_and_conclusion(program: x86.X86Program) -> x86.X86Program:
                   x86.Retq()]
 
     new_blocks = {'main': prelude + program.blocks['main'] + conclusion}
-    return x86.X86Program(new_blocks, stack_space=program.stack_space)
+    return x86.X86Program(new_blocks, stack_space = program.stack_space)
 
 
 ##################################################

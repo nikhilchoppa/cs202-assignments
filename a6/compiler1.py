@@ -799,20 +799,20 @@ def patch_instructions(program: x86.X86Program) -> x86.X86Program:
     :return: A patched x86 program.
     """
 
-    def mem_access(arg: x86.Arg) -> bool:
-        return isinstance(arg, (x86.Deref, x86.GlobalVal))
-
     def pi_instr(e: x86.Instr) -> List[x86.Instr]:
         match e:
-            case x86.NamedInstr(i, [arg1, arg2]) if mem_access(arg1) and mem_access(arg2) and not isinstance(arg1, x86.GlobalVal) and not isinstance(arg2, x86.GlobalVal):
-                return [x86.NamedInstr('movq', [arg1, x86.Reg('rax')]),
-                        x86.NamedInstr(i, [x86.Reg('rax'), arg2])]
-            case x86.NamedInstr('movzbq', [arg1, arg2]) if mem_access(arg1) and mem_access(arg2) and not isinstance(arg1, x86.GlobalVal) and not isinstance(arg2, x86.GlobalVal):
-                return [x86.NamedInstr('movzbq', [arg1, x86.Reg('rax')]),
-                        x86.NamedInstr('movq', [x86.Reg('rax'), arg2])]
+            case x86.NamedInstr(i, [x86.Deref(r1, o1), x86.Deref(r2, o2)]):
+                return [x86.NamedInstr('movq', [x86.Deref(r1, o1), x86.Reg('rax')]),
+                        x86.NamedInstr(i, [x86.Reg('rax'), x86.Deref(r2, o2)])]
+            case x86.NamedInstr('movzbq', [x86.Deref(r1, o1), x86.Deref(r2, o2)]):
+                    return [x86.NamedInstr('movzbq', [x86.Deref(r1, o1), x86.Reg('rax')]),
+                            x86.NamedInstr('movq', [x86.Reg('rax'), x86.Deref(r2, o2)])]
             case x86.NamedInstr('cmpq', [a1, x86.Immediate(i)]):
                 return [x86.NamedInstr('movq', [x86.Immediate(i), x86.Reg('rax')]),
                         x86.NamedInstr('cmpq', [a1, x86.Reg('rax')])]
+            case x86.NamedInstr(i, [x86.GlobalVal(name), arg]):
+                return [x86.NamedInstr('movq', [x86.GlobalVal(name), x86.Reg('rax')]),
+                        x86.NamedInstr(i, [x86.Reg('rax'), arg])]
             case _:
                 if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp, x86.JmpIf, x86.NamedInstr, x86.Set)):
                     return [e]
@@ -826,7 +826,7 @@ def patch_instructions(program: x86.X86Program) -> x86.X86Program:
 
     blocks = program.blocks
     new_blocks = {label: pi_block(block) for label, block in blocks.items()}
-    return x86.X86Program(new_blocks, stack_space=program.stack_space)
+    return x86.X86Program(new_blocks, stack_space = program.stack_space)
 
 
 ##################################################
@@ -870,6 +870,7 @@ def prelude_and_conclusion(program: x86.X86Program) -> x86.X86Program:
     new_blocks['main'] = prelude
     new_blocks['conclusion'] = conclusion
     return x86.X86Program(new_blocks, stack_space=program.stack_space)
+
 
 ##################################################
 # Compiler definition

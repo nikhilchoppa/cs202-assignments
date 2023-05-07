@@ -196,6 +196,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
                 # addq reads both arguments, so return the set of vars in a1 and a2
                 return vars_of(a1).union(vars_of(a2))
 
+            # TODO: Before this is what we added in class
             case x86.NamedInstr('movq', [a1, a2]):
                 # movq reads the second argument, so return the set of vars in a2
                 return vars_of(a2)
@@ -250,6 +251,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
             current_live_after = ul_instr(i, current_live_after)
             # print("Current Live After: ", current_live_after)
 
+            # TODO: Closest, but still not quite right
             current_live_after = current_live_after.difference(current_live_before)
             # print("Difference After: ", current_live_after)
             current_live_before = current_live_after
@@ -277,56 +279,46 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     # --------------------------------------------------
     # graph coloring
     # --------------------------------------------------
-    # modified color_graph function with move biasing based implementation
     def color_graph(local_vars: Set[x86.Var], interference_graph: InterferenceGraph) -> Coloring:
-        # First, sort the variables in descending order by the degree of the corresponding node in the interference
-        # graph. This will be used to break ties in the move biasing step.
-        vars_sorted = sorted(local_vars, key=lambda v: -len(interference_graph.neighbors(v)))
+        # Pick a variable to color based on the largest saturation set
+        # Pick a color for it that is not in its saturation set
+        # Update the saturation set
+        saturation_sets: Dict[x86.Var, Saturation] = {}
+        for v in local_vars:
+            saturation_sets[v] = set()
 
-        # Allocate registers to variables in the order determined by vars_sorted.
-        color_map = {}
-        available_colors = list(range(len(constants.caller_saved_registers)))
-        for v in vars_sorted:
-            # Get the set of colors that are not already assigned to interfering variables.
-            neighbor_colors = {color_map[n] for n in interference_graph.neighbors(v) if n in color_map}
-            available_colors = list(set(available_colors) - neighbor_colors)
+        coloring = {}
+        # Loop until there are no more vars to color
+        vars_to_color = local_vars.copy()
+        while len(vars_to_color) > 0:
+            vars_to_color = list(vars_to_color)
+            max_saturation_set = 0
+            var_to_color = vars_to_color[0]
+            for x in vars_to_color:
+                if len(saturation_sets[x]) > max_saturation_set:
+                    max_saturation_set = len(saturation_sets[x])
+                    var_to_color = x
 
-            # If there are available colors, assign one to the variable.
-            if available_colors:
-                color_map[v] = available_colors.pop(0)
-            else:
-                # Otherwise, find a variable to spill, preferring one that can be moved to a free register.
-                # First, find the set of interfering variables that have not yet been colored.
-                neighbors = set(interference_graph.neighbors(v)) & set(vars_sorted) - set(color_map.keys())
+            vars_to_color.remove(var_to_color)
 
-                # Now, find the set of free registers.
-                free_registers = set(constants.caller_saved_registers) - set(color_map.values())
+            x = var_to_color
+            # Pick the lowest color for it that is not in saturation set
+            lowest_possible_color = 0
+            while lowest_possible_color in saturation_sets[x]:
+                lowest_possible_color += 1
 
-                # Find a variable in the neighbors set that can be moved to a free register.
-                can_move = []
-                for n in neighbors:
-                    if len(interference_graph.neighbors(n)) < len(free_registers):
-                        can_move.append(n)
+            x_color = lowest_possible_color
+            coloring[x] = x_color
 
-                # Choose the variable to spill. If there are variables that can be moved to a free register,
-                # choose the one with the most interfering neighbors. Otherwise, choose the one with the fewest
-                # available colors (i.e., the one that will likely require the fewest spills).
-                if not neighbors:
-                    continue
-
-                if can_move:
-                    to_spill = max(can_move, key=lambda n: len(interference_graph.neighbors(n)))
-                else:
-                    to_spill = min(neighbors, key=lambda n: len(set(constants.caller_saved_registers) - set(color_map[c] for c in interference_graph.neighbors(n))))
-
-                # Spill the variable and assign its color to the current variable.
-                color_map[v] = color_map[to_spill]
-                del color_map[to_spill]
-
-        return color_map
+            for y in interference_graph.neighbors(x):
+                if isinstance(y, x86.Var):
+                    saturation_sets[y].add(x_color)
+        return coloring
 
     # --------------------------------------------------
     # assigning homes
+    # TODO: through program and replace variables with their homes
+    # TODO: Can copy and paste from assigned homes from a2, will not need the else statement in case x86.Var(x)
     def ah_arg(a: x86.Arg) -> x86.Arg:
         match a:
             case x86.Immediate(i):
@@ -363,6 +355,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     # Step 1: Perform liveness analysis
     blocks = program.blocks
     main_instrs = blocks['main']  # Can use, only one block this assignment, but not for future assignments
+    # TODO: run the liveness analysis
     live_after_sets = {label: ul_block(block) for label, block in blocks.items()}  # call ul_block
     log_ast('live-after sets', live_after_sets)
 
@@ -370,15 +363,17 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     interference_graph = InterferenceGraph()
     for label, block in blocks.items():
         bi_block(block, live_after_sets[label], interference_graph)
+    # TODO: build the interference graph
     # Where I want to call bi_block
     log_ast('interference graph', interference_graph)
 
     # Step 3: Color the graph
-    coloring = color_graph(local_vars=all_vars, interference_graph=interference_graph)
+    coloring = color_graph(all_vars, interference_graph)
     for v in all_vars:
         if v not in coloring:
             coloring[v] = 0
 
+    # TODO: color the interference graph
 
     log('coloring', coloring)
 
@@ -390,12 +385,12 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     stack_locations_used = 0
 
     # Step 4.1: Map colors to locations (the "color map")
+    # TODO: step 4.1
     # For each color in 'coloring', add a mapping in color_map to a location
     # start with caller-saved registers, use callee-saved registers when you run out
     caller_saved_registers = constants.caller_saved_registers
     callee_saved_registers = constants.callee_saved_registers
     color_map = {}
-    stack_locations_used = 0
 
     for color in set(coloring.values()):
         if color < len(caller_saved_registers):
@@ -403,9 +398,9 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
         else:
             # Use a callee-saved register
             color_map[color] = x86.Reg(callee_saved_registers[color - len(caller_saved_registers)])
-            stack_locations_used += 1
 
     # Step 4.2: Compose the "coloring" with the "color map" to get "homes"
+    # TODO: step 4.2
     homes = {}
     for v in all_vars:
         homes[v] = color_map[coloring[v]]

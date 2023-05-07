@@ -17,6 +17,7 @@ global_values = ['free_ptr', 'fromspace_end']
 
 tuple_var_types = {}
 
+
 def log(label, value):
     if global_logging:
         print()
@@ -102,17 +103,15 @@ def typecheck(program: Program) -> Program:
                     return int
                 else:
                     raise Exception('tc_exp', e)
-
-            # TODO: Added
-            case Prim('subscript', [e1, Constant(x)]):
-                tuple_t = tc_exp(e1, env)
-                assert isinstance(tuple_t, tuple)
-                return tuple_t[x]
+            case Prim('subscript', [e1, Constant(idx)]):
+                # TODO : fill in
+                tup_type = tc_exp(e1, env)
+                assert isinstance(tup_type, tuple)
+                return tup_type[idx]
             case Prim('tuple', args):
+                # TODO: fill in
                 types = [tc_exp(a, env) for a in args]
                 return tuple(types)
-            # TODO: End
-
             case Prim('eq', [e1, e2]):
                 assert tc_exp(e1, env) == tc_exp(e2, env)
                 return bool
@@ -182,15 +181,6 @@ def rco(prog: Program) -> Program:
             case Print(e1):
                 new_e1 = rco_exp(e1, bindings)
                 return Print(new_e1)
-            case While(condition, body_stmts):
-                condition_bindings = {}
-                condition_exp = rco_exp(condition, condition_bindings)
-                condition_stmts = [Assign(x, e) for x, e in condition_bindings.items()]
-                new_condition = Begin(condition_stmts, condition_exp)
-
-                new_body_stmts = rco_stmts(body_stmts)
-                return While(new_condition, new_body_stmts)
-
             case If(condition, then_stmts, else_stmts):
                 new_condition = rco_exp(condition, bindings)
                 new_then_stmts = rco_stmts(then_stmts)
@@ -199,6 +189,14 @@ def rco(prog: Program) -> Program:
                 return If(new_condition,
                           new_then_stmts,
                           new_else_stmts)
+
+            case While(cond, body_stmts):
+                # TODO : fix this so the bindings go in a Begin expression
+                cond_bindings = {}
+                new_cond_exp = rco_exp(cond, cond_bindings)
+                cond_stmts = [Assign(x, e) for x, e in cond_bindings.items()]
+                new_stmts = rco_stmts(body_stmts)
+                return While(Begin(cond_stmts, new_cond_exp), new_stmts)
             case _:
                 raise Exception('rco_stmt', stmt)
 
@@ -243,26 +241,26 @@ def rco(prog: Program) -> Program:
 # Stmt   ::= Assign(x, Expr) | Print(Expr) | If(Expr, Stmts, Stmts) | While(Begin(Stmts, Expr), Stmts)
 # Stmts  ::= List[Stmt]
 # LWhile ::= Program(Stmts)
-
-def make_tag(types):
+def mk_tag(ts):
     tag = 0
-    # 1. construct the pointer mask
-    for t in reversed(types):
+    # 1. Construct the pointer mask
+    for t in reversed(ts):
         tag = tag << 1
         if isinstance(t, tuple):
             tag = tag + 1
         else:
-            tag = tag + 0  # (pass)
+            tag = tag + 0
 
-    # 2. construct length
+    # 2. Construct length
     tag = tag << 6
-    tag = tag + len(types)
+    tag = tag + len(ts)
 
     # 3. add the forwarding pointer indicator
     tag = tag << 1
     tag = tag + 1
 
     return tag
+
 
 def expose_alloc(prog: Program) -> Program:
     """
@@ -272,10 +270,14 @@ def expose_alloc(prog: Program) -> Program:
     :return: An Ltup program, without Tuple constructors
     """
 
+    # every tuple construction will be a statement of the form:
+    # x = tuple(args)
+    # this is true because of RCO
+
     def ea_stmt(s: Stmt) -> List[Stmt]:
         match s:
             case Assign(x, Prim('tuple', args)):
-                # TODO: Added
+                # todo : fill in
                 all_stmts = []
                 bytes_needed = len(args) * 8 + 8
                 tmp1_var = gensym("tmp")
@@ -286,12 +288,15 @@ def expose_alloc(prog: Program) -> Program:
 
                 # allocate
                 # x = allcoate (32, tag)
-                # bytes_needed = const(length of args * 8 ) + 8)
-
-                tag = make_tag(tuple_var_types[x])
+                # todo : fill in
+                tag = mk_tag(tuple_var_types[x])
                 tmp3 = (Assign(x, Prim('allocate', [Constant(bytes_needed), Constant(tag)])))
                 all_stmts += [tmp1, tmp2, collect_if, tmp3]
 
+                # set contents
+                # _ = tuple_set(x,0,1)
+                # _ = tuple_set(x,1,2)
+                # _ = tuple_set(x,2,3)
 
                 for i, a in enumerate(args):
                     all_stmts.append(Assign('_', Prim('tuple_set', [Var(x), Constant(i), a])))
@@ -471,12 +476,12 @@ def select_instructions(prog: ctup.CProgram) -> x86.X86Program:
                 return [x86.NamedInstr('movq', [x86.Var(x), x86.Reg('r11')]),
                         x86.NamedInstr('movq', [x86.Immediate(atm1), x86.Deref('r11', offset)])
                         ]
-            case ctup.Assign(x, ctup.Prim('allocate', [ctup.Constant(y)])):
-                offset = ((int(y) + 1) * 8)
+            case ctup.Assign(x, ctup.Prim('allocate', [ctup.Constant(idx)])):
+                offset = ((int(idx) + 1) * 8)
                 return [x86.NamedInstr('movq', [x86.GlobalVal('free_ptr'), x86.Var(x)]),
                         x86.NamedInstr('addq', [x86.Immediate(offset), x86.GlobalVal('free_ptr')]),
                         x86.NamedInstr('movq', [x86.Var(x), x86.Reg('r11')]),
-                        x86.NamedInstr('movq', [x86.Immediate(make_tag(x)), x86.Deref('r11', offset - 8)])]
+                        x86.NamedInstr('movq', [x86.Immediate(mk_tag(x)), x86.Deref('r11', offset - 8)])]
 
             case ctup.Assign(y, ctup.Prim('subscript', [ctup.Var(x), ctup.Constant(idx)])):
                 offset = (int(idx) + 1) * 8
@@ -522,6 +527,7 @@ def select_instructions(prog: ctup.CProgram) -> x86.X86Program:
 Coloring = Dict[x86.Var, x86.Arg]
 Saturation = Set[x86.Arg]
 
+
 def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     """
     Assigns homes to variables in the input program. Allocates registers and
@@ -532,7 +538,6 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     locations.
     """
 
-    # TODO: Do this pass last, can still pass test case without (what he said in class)
     blocks = program.blocks
     all_vars: Set[x86.Var] = set()
     live_before_sets = {'conclusion': set()}
@@ -545,7 +550,6 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     # --------------------------------------------------
     # utilities
     # --------------------------------------------------
-
     def vars_arg(a: x86.Arg) -> Set[x86.Var]:
         match a:
             case x86.Immediate(i):
@@ -558,7 +562,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
                 all_vars.add(x86.Var(x))
                 return {x86.Var(x)}
             case x86.GlobalVal(val):
-                return set()
+                return set(val)
             case x86.Deref(reg, offset):
                 if isinstance(reg, x86.Var):
                     all_vars.add(reg)
@@ -612,6 +616,9 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
 
         live_before_sets[label] = current_live_after
         live_after_sets[label] = list(reversed(block_live_after_sets))
+        for v in current_live_after:
+            if isinstance(v, x86.Var) and isinstance(v, Tuple):
+                interference_graph.add_edge(v)
 
     def ul_fixpoint(labels: List[str]):
         fixpoint_reached = False
@@ -633,14 +640,8 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
             for v2 in live_after:
                 graph.add_edge(v1, v2)
 
-
     def bi_block(instrs: List[x86.Instr], live_afters: List[Set[x86.Var]], graph: InterferenceGraph):
         for instr, live_after in zip(instrs, live_afters):
-            if "collect" in str(instr):  # Convert instr to a string and check if "collect" is present
-                for var in live_after:
-                    if isinstance(var, x86.Var) and "tuple" in str(var):
-                        for reg in x86_program.registers:
-                            graph.add_edge(var, reg)
             bi_instr(instr, live_after, graph)
 
     # --------------------------------------------------
@@ -651,8 +652,8 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
 
         to_color = local_vars.copy()
 
-        # Saturation sets start out with all registers in the neighbors of each var
-        saturation_sets = {x: set() & set(interference_graph.neighbors(x)) for x in local_vars}
+        # Saturation sets start out empty
+        saturation_sets = {x: set() for x in local_vars}
 
         # Loop until we are finished coloring
         while to_color:
@@ -662,27 +663,16 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
             # Remove x from the variables to color
             to_color.remove(x)
 
-            # Pick color from registers first, then stack locations
-            x_color = None
-            # if isinstance(x, x86.Var) and "tuple" in str(x):
-            #     # For tuple-valued var, pick from root stack locations
-            #     for loc in saturation_sets[x]:
-            #         if loc not in saturation_sets[x]:
-            #             x_color = loc
-            #             break
-            # if x_color is None:
-            #     # If no root stack location available, pick from regular stack locations or registers
-            #     # for loc in x86_program.registers + x86_program.stack_locations:
-            #     for loc in
-            #         if loc not in saturation_sets[x]:
-            #             x_color = loc
-            #             break
+            # Find the smallest color not in x's saturation set
+            x_color = next(i for i in itertools.count() if i not in saturation_sets[x])
 
             # Assign x's color
             coloring[x] = x_color
 
             # Add x's color to the saturation sets of its neighbors
             for y in interference_graph.neighbors(x):
+                if y not in saturation_sets:
+                    saturation_sets[y] = set()
                 saturation_sets[y].add(x_color)
 
         return coloring
@@ -706,13 +696,10 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
                 return a
             case x86.Var(x):
                 return homes[x86.Var(x)]
+            case x86.Deref(reg, offset):
+                return x86.Deref(reg, offset)
             case x86.GlobalVal(val):
                 return a
-            case x86.Deref(reg, offset):
-                if isinstance(reg, x86.Var):
-                    return homes[reg]
-                else:
-                    return a
             case _:
                 raise Exception('ah_arg', a)
 
@@ -766,7 +753,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
             r = available_registers.pop()
             color_map[color] = x86.Reg(r)
         else:
-            offset = stack_locations_used+1
+            offset = stack_locations_used + 1
             color_map[color] = x86.Deref('rbp', -(offset * 8))
             stack_locations_used += 1
 
@@ -778,7 +765,7 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     # Step 5: replace variables with their homes
     blocks = program.blocks
     new_blocks = {label: ah_block(block) for label, block in blocks.items()}
-    return x86.X86Program(new_blocks, stack_space = align(8 * stack_locations_used))
+    return x86.X86Program(new_blocks, stack_space=align(8 * stack_locations_used))
 
 
 ##################################################
@@ -799,25 +786,22 @@ def patch_instructions(program: x86.X86Program) -> x86.X86Program:
     :return: A patched x86 program.
     """
 
-    def mem_access(arg: x86.Arg) -> bool:
-        return isinstance(arg, (x86.Deref, x86.GlobalVal))
-
     def pi_instr(e: x86.Instr) -> List[x86.Instr]:
         match e:
-            case x86.NamedInstr(i, [arg1, arg2]) if mem_access(arg1) and mem_access(arg2) and not isinstance(arg1, x86.GlobalVal) and not isinstance(arg2, x86.GlobalVal):
-                return [x86.NamedInstr('movq', [arg1, x86.Reg('rax')]),
-                        x86.NamedInstr(i, [x86.Reg('rax'), arg2])]
-            case x86.NamedInstr('movzbq', [arg1, arg2]) if mem_access(arg1) and mem_access(arg2) and not isinstance(arg1, x86.GlobalVal) and not isinstance(arg2, x86.GlobalVal):
-                return [x86.NamedInstr('movzbq', [arg1, x86.Reg('rax')]),
-                        x86.NamedInstr('movq', [x86.Reg('rax'), arg2])]
-            case x86.NamedInstr('cmpq', [a1, x86.Immediate(i)]):
+            case x86.NamedInstr(i, [x86.Deref(r1, o1), x86.Deref(r2, o2)]) if not (
+                        isinstance(r1, x86.GlobalVal) or isinstance(r2, x86.GlobalVal)):
+                return [x86.NamedInstr('movq', [x86.Deref(r1, o1), x86.Reg('rax')]),
+                        x86.NamedInstr(i, [x86.Reg('rax'), x86.Deref(r2, o2)])]
+            case x86.NamedInstr('movzbq', [x86.Deref(r1, o1), x86.Deref(r2, o2)]) if not (
+                        isinstance(r1, x86.GlobalVal) or isinstance(r2, x86.GlobalVal)):
+                return [x86.NamedInstr('movzbq', [x86.Deref(r1, o1), x86.Reg('rax')]),
+                        x86.NamedInstr('movq', [x86.Reg('rax'), x86.Deref(r2, o2)])]
+            case x86.NamedInstr('cmpq', [a1, x86.Immediate(i)]) if not isinstance(a1, x86.Deref):
                 return [x86.NamedInstr('movq', [x86.Immediate(i), x86.Reg('rax')]),
                         x86.NamedInstr('cmpq', [a1, x86.Reg('rax')])]
             case _:
                 if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp, x86.JmpIf, x86.NamedInstr, x86.Set)):
                     return [e]
-                else:
-                    raise Exception('pi_instr', e)
 
     def pi_block(instrs: List[x86.Instr]) -> List[x86.Instr]:
         new_instrs = [pi_instr(i) for i in instrs]
@@ -870,6 +854,7 @@ def prelude_and_conclusion(program: x86.X86Program) -> x86.X86Program:
     new_blocks['main'] = prelude
     new_blocks['conclusion'] = conclusion
     return x86.X86Program(new_blocks, stack_space=program.stack_space)
+
 
 ##################################################
 # Compiler definition
@@ -951,4 +936,3 @@ if __name__ == '__main__':
             except:
                 print('Error during compilation! **************************************************')
                 traceback.print_exception(*sys.exc_info())
-

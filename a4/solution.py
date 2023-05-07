@@ -1,4 +1,3 @@
-from _ast import *
 from typing import Set, Dict
 import itertools
 import sys
@@ -59,44 +58,79 @@ def typecheck(program: Program) -> Program:
     :return: The program, if it is well-typed
     """
 
+    prim_arg_types = {
+        'add': [int, int],
+        'sub': [int, int],
+        'mult': [int, int],
+        'not': [bool],
+        'or': [bool, bool],
+        'and': [bool, bool],
+        'gt': [int, int],
+        'gte': [int, int],
+        'lt': [int, int],
+        'lte': [int, int],
+    }
+
+    prim_output_types = {
+        'add': int,
+        'sub': int,
+        'mult': int,
+        'not': bool,
+        'or': bool,
+        'and': bool,
+        'gt': bool,
+        'gte': bool,
+        'lt': bool,
+        'lte': bool,
+    }
+
     def tc_exp(e: Expr, env: TEnv) -> type:
         match e:
             case Var(x):
                 return env[x]
-            case Constant(n):
-                return type(n)
-            case Prim('add', [e1, e2]):
-                assert tc_exp(e1, env) == int
-                assert tc_exp(e2, env) == int
-                return int
+            case Constant(i):
+                if isinstance(i, bool):
+                    return bool
+                elif isinstance(i, int):
+                    return int
+                else:
+                    raise Exception('tc_exp', e)
             case Prim('eq', [e1, e2]):
                 assert tc_exp(e1, env) == tc_exp(e2, env)
                 return bool
+            case Prim(op, args):
+                arg_types = [tc_exp(a, env) for a in args]
+                assert arg_types == prim_arg_types[op]
+                return prim_output_types[op]
+            case _:
+                raise Exception('tc_exp', e)
 
     def tc_stmt(s: Stmt, env: TEnv):
-        # assign (x, Expr) | Print(Expr)| If (Expr, Stmts, Stmts)
         match s:
-            case Assign(x, e):
-                if x in env:
-                    assert env[x] == tc_exp(e, env)
-                else:
-                    env[x] = tc_exp(e, env)
+            case If(condition, then_stmts, else_stmts):
+                assert tc_exp(condition, env) == bool
+
+                for s in then_stmts:
+                    tc_stmt(s, env)
+                for s in else_stmts:
+                    tc_stmt(s, env)
             case Print(e):
                 tc_exp(e, env)
-            case If(e1, s1, s2):
-                assert tc_exp(e1, env) == bool
-                for s in s1:
-                    tc_stmt(s, env)
-                for s in s2:
-                    tc_stmt(s, env)
+            case Assign(x, e):
+                t_e = tc_exp(e, env)
+                if x in env:
+                    assert t_e == env[x]
+                else:
+                    env[x] = t_e
+            case _:
+                raise Exception('tc_stmt', s)
 
-    def tc_stmts(ss: List[Stmt]):
-        env = {}
-        for s in ss:
+    def tc_stmts(stmts: List[Stmt], env: TEnv):
+        for s in stmts:
             tc_stmt(s, env)
 
-    tc_stmts(program.stmts)
-
+    env = {}
+    tc_stmts(program.stmts, env)
     return program
 
 
@@ -126,9 +160,13 @@ def rco(prog: Program) -> Program:
                 new_e1 = rco_exp(e1, bindings)
                 return Print(new_e1)
             case If(condition, then_stmts, else_stmts):
-                return If(rco_exp(condition, bindings),
-                          rco_stmts(then_stmts),
-                          rco_stmts(else_stmts))
+                new_condition = rco_exp(condition, bindings)
+                new_then_stmts = rco_stmts(then_stmts)
+                new_else_stmts = rco_stmts(else_stmts)
+
+                return If(new_condition,
+                          new_then_stmts,
+                          new_else_stmts)
             case _:
                 raise Exception('rco_stmt', stmt)
 
@@ -174,73 +212,70 @@ def rco(prog: Program) -> Program:
 # Stmts ::= List[Stmt]
 # LVar  ::= Program(Stmts)
 
-def explicate_pred(prog: Program) -> cif.CProgram:
+def explicate_control(prog: Program) -> cif.CProgram:
     """
     Transforms an Lif Expression into a Cif program.
     :param prog: An Lif Expression
     :return: A Cif Program
     """
+
+    # the basic blocks of the program
     basic_blocks: Dict[str, List[cif.Stmt]] = {}
 
+    # create a new basic block to hold some statements
+    # generates a brand-new name for the block and returns it
     def create_block(stmts: List[cif.Stmt]) -> str:
-        new_label = gensym('label')
-        basic_blocks[new_label] = stmts
-        return new_label
+        label = gensym('label')
+        basic_blocks[label] = stmts
+        return label
 
-    def ec_atm(a: Expr) -> cif.Atm:
-        match a:
-            case Constant(i):
-                return cif.Constant(i)
-            case Var(i):
-                return cif.Var(i)
+    def explicate_atm(e: Expr) -> cif.Atm:
+        match e:
+            case Var(x):
+                return cif.Var(x)
+            case Constant(c):
+                return cif.Constant(c)
             case _:
-                raise Exception('ec_atm', a)
+                raise RuntimeError(e)
 
-    def ec_expr(e: Expr) -> cif.Expr:
+    def explicate_exp(e: Expr) -> cif.Expr:
         match e:
             case Prim(op, args):
-                new_args = [ec_expr(arg) for arg in args]
+                new_args = [explicate_atm(a) for a in args]
                 return cif.Prim(op, new_args)
             case _:
-                return ec_atm(e)
+                return explicate_atm(e)
 
-    def ec_pred(p: Expr, if_label: str, else_label: str) -> cif.Stmt:
-        match p:
-            case Prim("eq", [lhs, rhs]):
-                return cif.If(cif.Prim("eq", [ec_atm(lhs), ec_atm(rhs)]), cif.Goto(if_label), cif.Goto(else_label))
-            case Prim("lt", [lhs, rhs]):
-                return cif.If(cif.Prim("lt", [ec_atm(lhs), ec_atm(rhs)]), cif.Goto(if_label), cif.Goto(else_label))
-            case Prim("gt", [lhs, rhs]):
-                return cif.If(cif.Prim("gt", [ec_atm(lhs), ec_atm(rhs)]), cif.Goto(if_label), cif.Goto(else_label))
-            case Prim("lte", [lhs, rhs]):
-                return cif.If(cif.Prim("lte", [ec_atm(lhs), ec_atm(rhs)]), cif.Goto(if_label), cif.Goto(else_label))
-            case Prim("not", [e]):
-                return ec_pred(Prim("eq", [e, Constant(0)]), if_label, else_label)
-            case _:
-                return cif.If(ec_expr(p), cif.Goto(if_label), cif.Goto(else_label))
-
-    def ec_stmt(s: Stmt, cont: List[cif.Stmt]) -> List[cif.Stmt]:
-        match s:
-            case Assign(x, e):
-                return [cif.Assign(x, ec_expr(e))] + cont
-            case Print(e):
-                return [cif.Print(ec_expr(e))] + cont
+    def explicate_stmt(stmt: Stmt, cont: List[cif.Stmt]) -> List[cif.Stmt]:
+        match stmt:
+            case Assign(x, exp):
+                new_exp = explicate_exp(exp)
+                new_stmt: List[cif.Stmt] = [cif.Assign(x, new_exp)]
+                return new_stmt + cont
+            case Print(exp):
+                new_exp = explicate_atm(exp)
+                new_stmt: List[cif.Stmt] = [cif.Print(new_exp)]
+                return new_stmt + cont
             case If(condition, then_stmts, else_stmts):
-                then_label = create_block(ec_stmts(then_stmts, cont))
-                else_label = create_block(ec_stmts(else_stmts, cont))
-                return [ec_pred(condition, then_label, else_label)]
-            case _:
-                raise Exception('ec_stmt', s)
+                cont_label = create_block(cont)
+                e2_label = create_block(explicate_stmts(then_stmts, [cif.Goto(cont_label)]))
+                e3_label = create_block(explicate_stmts(else_stmts, [cif.Goto(cont_label)]))
+                return [cif.If(explicate_exp(condition),
+                               cif.Goto(e2_label),
+                               cif.Goto(e3_label))]
 
-    def ec_stmts(stmts: List[Stmt], cont: List[cif.Stmt]) -> List[cif.Stmt]:
+            case _:
+                raise RuntimeError(stmt)
+
+    def explicate_stmts(stmts: List[Stmt], cont: List[cif.Stmt]) -> List[cif.Stmt]:
         for s in reversed(stmts):
-            cont = ec_stmt(s, cont)
+            cont = explicate_stmt(s, cont)
         return cont
 
-    cont = [cif.Return(0)]
-    start_block = create_block(ec_stmts(prog.stmts, cont))
-    basic_blocks['start'] = [cif.Goto(start_block)]
+    new_body = [cif.Return(cif.Constant(0))]
+    new_body = explicate_stmts(prog.stmts, new_body)
 
+    basic_blocks['start'] = new_body
     return cif.CProgram(basic_blocks)
 
 
@@ -254,13 +289,14 @@ def explicate_pred(prog: Program) -> cif.CProgram:
 #        | If(Expr, Goto(label), Goto(label)) | Goto(label) | Return(Expr)
 # Stmts ::= List[Stmt]
 # Cif   ::= CProgram(Dict[label, Stmts])
-# TODO: can use these
-# x86.NamedInstr('set',['e', x86.ByteReg('al')])
-# x86.NamedInstr('sete', [x86.ByteReg('al')])
-#
-# x86.Set('e',x86.ByteReg('al') )
-# x86.NamedInstr('jmp label', [])
+
 def select_instructions(prog: cif.CProgram) -> x86.X86Program:
+    """
+    Transforms a Lif program into a pseudo-x86 assembly program.
+    :param prog: a Lif program
+    :return: a pseudo-x86 program
+    """
+
     def si_atm(a: cif.Expr) -> x86.Arg:
         match a:
             case cif.Constant(i):
@@ -270,61 +306,54 @@ def select_instructions(prog: cif.CProgram) -> x86.X86Program:
             case _:
                 raise Exception('si_atm', a)
 
-    def si_expr(e: cif.Expr) -> x86.Arg:
-        match e:
-            case cif.Prim(op, args):
-                if op in {'add', 'sub', 'and', 'or'}:
-                    assert len(args) == 2
-                    instr = {'add': 'addq', 'sub': 'subq', 'and': 'andq', 'or': 'orq'}[op]
-                    return [si_atm(args[0]), instr, si_atm(args[1])]
-                elif op == 'not':
-                    assert len(args) == 1
-                    return [si_atm(args[0]), 'xorq', x86.Immediate(1)]
-                else:
-                    raise Exception('si_expr', e)
-            case _:
-                return si_atm(e)
-
     def si_stmts(stmts: List[cif.Stmt]) -> List[x86.Instr]:
         instrs = []
+
         for stmt in stmts:
             instrs.extend(si_stmt(stmt))
+
         return instrs
 
-    def si_pred(p: cif.Expr, label: str) -> List[x86.Instr]:
-        match p:
-            case cif.Prim('eq', [lhs, rhs]):
-                return [si_atm(lhs), 'cmpq', si_atm(rhs), 'je', label]
-            case cif.Prim('lt', [lhs, rhs]):
-                return [si_atm(lhs), 'cmpq', si_atm(rhs), 'jl', label]
-            case cif.Prim('gt', [lhs, rhs]):
-                return [si_atm(lhs), 'cmpq', si_atm(rhs), 'jg', label]
-            case cif.Prim('lte', [lhs, rhs]):
-                return [si_atm(lhs), 'cmpq', si_atm(rhs), 'jle', label]
-            case _:
-                raise Exception('si_pred', p)
+    op_cc = {'eq': 'e', 'gt': 'g', 'gte': 'ge', 'lt': 'l', 'lte': 'le'}
+
+    binop_instrs = {'add': 'addq', 'sub': 'subq', 'mult': 'imulq', 'and': 'andq', 'or': 'orq'}
 
     def si_stmt(stmt: cif.Stmt) -> List[x86.Instr]:
         match stmt:
-            case cif.Assign(x, e):
-                return [si_expr(e), x86.NamedInstr('movq', [x86.Reg('rax'), x86.Var(x)])]
-            case cif.Print(e):
-                return [si_expr(e), x86.NamedInstr('movq', [x86.Reg('rdi'), x86.Var('rax')]), x86.Callq('print_int')]
-            case cif.If(p, cif.Goto(label1), cif.Goto(label2)):
-                return si_pred(p, label1) + [x86.NamedInstr('jmp', [label2])]
+            case cif.Assign(x, cif.Prim(op, [atm1, atm2])):
+                if op in binop_instrs:
+                    return [x86.NamedInstr('movq', [si_atm(atm1), x86.Reg('rax')]),
+                            x86.NamedInstr(binop_instrs[op], [si_atm(atm2), x86.Reg('rax')]),
+                            x86.NamedInstr('movq', [x86.Reg('rax'), x86.Var(x)])]
+                elif op in op_cc:
+                    return [x86.NamedInstr('cmpq', [si_atm(atm2), si_atm(atm1)]),
+                            x86.Set(op_cc[op], x86.ByteReg('al')),
+                            x86.NamedInstr('movzbq', [x86.ByteReg('al'), x86.Var(x)])]
+
+                else:
+                    raise Exception('si_stmt failed op', op)
+            case cif.Assign(x, cif.Prim('not', [atm1])):
+                return [x86.NamedInstr('movq', [si_atm(atm1), x86.Var(x)]),
+                        x86.NamedInstr('xorq', [x86.Immediate(1), x86.Var(x)])]
+            case cif.Assign(x, atm1):
+                return [x86.NamedInstr('movq', [si_atm(atm1), x86.Var(x)])]
+            case cif.Print(atm1):
+                return [x86.NamedInstr('movq', [si_atm(atm1), x86.Reg('rdi')]),
+                        x86.Callq('print_int')]
+            case cif.Return(atm1):
+                return [x86.NamedInstr('movq', [si_atm(atm1), x86.Reg('rax')]),
+                        x86.Jmp('conclusion')]
             case cif.Goto(label):
-                return [x86.NamedInstr('jmp', [label])]
-            case cif.Return(e):
-                return [si_expr(e), x86.NamedInstr('jmp', ['conclusion'])]
+                return [x86.Jmp(label)]
+            case cif.If(a, cif.Goto(then_label), cif.Goto(else_label)):
+                return [x86.NamedInstr('cmpq', [si_atm(a), x86.Immediate(1)]),
+                        x86.JmpIf('e', then_label),
+                        x86.Jmp(else_label)]
             case _:
                 raise Exception('si_stmt', stmt)
 
-    x86_blocks = {}
-    for label in prog.blocks:
-        instrs = si_stmts(prog.blocks[label])
-        x86_blocks[label] = instrs
-
-    return x86.X86Program(x86_blocks)
+    basic_blocks = {label: si_stmts(block) for (label, block) in prog.blocks.items()}
+    return x86.X86Program(basic_blocks)
 
 
 ##################################################
@@ -354,9 +383,10 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     """
 
     all_vars: Set[x86.Var] = set()
-
-    live_after_sets: Dict[str, List[Set[x86.Var]]] = {}
-    live_before_sets: Dict[str, Set[x86.Var]] = {}
+    live_before_sets = {'conclusion': set()}
+    live_after_sets = {}
+    homes: Dict[x86.Var, x86.Arg] = {}
+    blocks = program.blocks
 
     # --------------------------------------------------
     # utilities
@@ -367,37 +397,45 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
                 return set()
             case x86.Reg(r):
                 return set()
+            case x86.ByteReg(r):
+                return set()
             case x86.Var(x):
-                all_vars.add(a)
-                return {a}
+                all_vars.add(x86.Var(x))
+                return {x86.Var(x)}
             case _:
                 raise Exception('ul_arg', a)
 
     def reads_of(i: x86.Instr) -> Set[x86.Var]:
         match i:
-            case x86.NamedInstr('movq', [e1, e2]):
+            case x86.NamedInstr(i, [e1, e2]) if i in ['movq', 'movzbq']:
                 return vars_arg(e1)
-            case x86.NamedInstr('addq', [e1, e2]):
+            case x86.NamedInstr(i, [e1, e2]) if i in ['addq', 'cmpq', 'imulq', 'subq', 'andq', 'orq', 'xorq']:
                 return vars_arg(e1).union(vars_arg(e2))
-            case x86.Jmp(label) | x86.JmpIf(label):
-                # what gets read by a jmp? everything in the destination's live-before set
-                if label in live_before_sets:
-                    return live_before_sets[label]
-                else:
-                    # go compute the live-before set, and save it in live_before_sets
+            case x86.Jmp(label) | x86.JmpIf(_, label):
+                # if we don't know the live-before set for the destination,
+                # calculate it first
+                if label not in live_before_sets:
                     ul_block(label)
-                    return live_before_sets[label]
+
+                # the variables that might be read after this instruction
+                # are the live-before variables of the destination block
+                return live_before_sets[label]
             case _:
-                return set()
+                if isinstance(i, (x86.Callq, x86.Set)):
+                    return set()
+                else:
+                    raise Exception(i)
 
     def writes_of(i: x86.Instr) -> Set[x86.Var]:
         match i:
-            case x86.NamedInstr('movq', [e1, e2]):
-                return vars_arg(e2)
-            case x86.NamedInstr('addq', [e1, e2]):
+            case x86.NamedInstr(i, [e1, e2]) \
+                if i in ['movq', 'movzbq', 'addq', 'subq', 'imulq', 'cmpq', 'andq', 'orq', 'xorq']:
                 return vars_arg(e2)
             case _:
-                return set()
+                if isinstance(i, (x86.Jmp, x86.JmpIf, x86.Callq, x86.Set)):
+                    return set()
+                else:
+                    raise Exception(i)
 
     # --------------------------------------------------
     # liveness analysis
@@ -405,22 +443,17 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     def ul_instr(i: x86.Instr, live_after: Set[x86.Var]) -> Set[x86.Var]:
         return live_after.difference(writes_of(i)).union(reads_of(i))
 
-    # TODO: change this so that it takes a label, and fetches the instructions
-    # for that label from prog.blocks
-    # save the live-after sets in the global dict
-    # save the live-before set in the global dict
-    def ul_block(label: str) -> List[Set[x86.Var]]:
+    def ul_block(label: str):
+        instrs = blocks[label]
         current_live_after: Set[x86.Var] = set()
-        instrs = program.blocks[label]
 
-        local_live_after_sets = []
+        block_live_after_sets = []
         for i in reversed(instrs):
-            local_live_after_sets.append(current_live_after)
+            block_live_after_sets.append(current_live_after)
             current_live_after = ul_instr(i, current_live_after)
 
-        live_before_sets[label] = list(reversed(local_live_after_sets))
-        live_after_sets[label] = current_live_after
-        return list(reversed(local_live_after_sets))
+        live_before_sets[label] = current_live_after
+        live_after_sets[label] = list(reversed(block_live_after_sets))
 
     # --------------------------------------------------
     # interference graph
@@ -474,16 +507,16 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
         else:
             return num_bytes + (16 - (num_bytes % 16))
 
-    homes: Dict[str, x86.Arg] = {}
-
     def ah_arg(a: x86.Arg) -> x86.Arg:
         match a:
             case x86.Immediate(i):
                 return a
             case x86.Reg(r):
                 return a
+            case x86.ByteReg(r):
+                return a
             case x86.Var(x):
-                return homes[x]
+                return homes[x86.Var(x)]
             case _:
                 raise Exception('ah_arg', a)
 
@@ -491,8 +524,10 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
         match e:
             case x86.NamedInstr(i, args):
                 return x86.NamedInstr(i, [ah_arg(a) for a in args])
+            case x86.Set(cc, a1):
+                return x86.Set(cc, ah_arg(a1))
             case _:
-                if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp)):
+                if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp, x86.JmpIf)):
                     return e
                 else:
                     raise Exception('ah_instr', e)
@@ -505,8 +540,6 @@ def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     # --------------------------------------------------
 
     # Step 1: Perform liveness analysis
-    blocks = program.blocks
-    # live_after_sets = {label: ul_block(block) for label, block in blocks.items()}
     ul_block('start')
     log_ast('live-after sets', live_after_sets)
 
@@ -571,17 +604,17 @@ def patch_instructions(program: x86.X86Program) -> x86.X86Program:
 
     def pi_instr(e: x86.Instr) -> List[x86.Instr]:
         match e:
-            case x86.NamedInstr('movq', [x86.Deref(_, _), x86.Deref(_, _)]):
-                return [x86.NamedInstr('movq', [e.args[0], x86.Reg('rax')]),
-                        x86.NamedInstr('movq', [x86.Reg('rax'), e.args[1]])]
-            case x86.NamedInstr('addq', [x86.Deref(_, _), x86.Deref(_, _)]):
-                return [x86.NamedInstr('movq', [e.args[0], x86.Reg('rax')]),
-                        x86.NamedInstr('addq', [x86.Reg('rax'), e.args[1]])]
+            case x86.NamedInstr(i, [x86.Deref(r1, o1), x86.Deref(r2, o2)]):
+                return [x86.NamedInstr('movq', [x86.Deref(r1, o1), x86.Reg('rax')]),
+                        x86.NamedInstr(i, [x86.Reg('rax'), x86.Deref(r2, o2)])]
+            case x86.NamedInstr('movzbq', [x86.Deref(r1, o1), x86.Deref(r2, o2)]):
+                return [x86.NamedInstr('movzbq', [x86.Deref(r1, o1), x86.Reg('rax')]),
+                        x86.NamedInstr('movq', [x86.Reg('rax'), x86.Deref(r2, o2)])]
             case x86.NamedInstr('cmpq', [a1, x86.Immediate(i)]):
-                return [x86.NamedInstr('movq', [a1, x86.Reg('rax')]),
-                        x86.NamedInstr('cmpq', [x86.Reg('rax'), x86.Immediate(i)])]
+                return [x86.NamedInstr('movq', [x86.Immediate(i), x86.Reg('rax')]),
+                        x86.NamedInstr('cmpq', [a1, x86.Reg('rax')])]
             case _:
-                if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp, x86.NamedInstr)):
+                if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp, x86.JmpIf, x86.NamedInstr, x86.Set)):
                     return [e]
                 else:
                     raise Exception('pi_instr', e)
@@ -620,13 +653,15 @@ def prelude_and_conclusion(program: x86.X86Program) -> x86.X86Program:
                                        x86.Reg('rsp')]),
                x86.Jmp('start')]
 
-    conclusion = [x86.NamedInstr('addq', [x86.Immediate(program.stack_space), x86.Reg('rsp')]),
+    conclusion = [x86.NamedInstr('addq', [x86.Immediate(program.stack_space),
+                                          x86.Reg('rsp')]),
                   x86.NamedInstr('popq', [x86.Reg('rbp')]),
                   x86.Retq()]
 
-    program.blocks['main'] = prelude + program.blocks['main']
-    program.blocks['conclusion'] = conclusion
-    return x86.X86Program(program.blocks, stack_space=program.stack_space)
+    new_blocks = program.blocks.copy()
+    new_blocks['main'] = prelude
+    new_blocks['conclusion'] = conclusion
+    return x86.X86Program(new_blocks, stack_space=program.stack_space)
 
 
 ##################################################
@@ -636,7 +671,7 @@ def prelude_and_conclusion(program: x86.X86Program) -> x86.X86Program:
 compiler_passes = {
     'typecheck': typecheck,
     'remove complex opera*': rco,
-    'explicate control': explicate_pred,
+    'explicate control': explicate_control,
     'select instructions': select_instructions,
     'allocate registers': allocate_registers,
     'patch instructions': patch_instructions,
@@ -701,3 +736,4 @@ if __name__ == '__main__':
             except:
                 print('Error during compilation! **************************************************')
                 traceback.print_exception(*sys.exc_info())
+

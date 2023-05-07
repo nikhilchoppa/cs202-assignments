@@ -1,13 +1,12 @@
 from typing import Set, Dict, Tuple
+import itertools
 import sys
 import traceback
-from dataclasses import dataclass
 
 from cs202_support.python import *
 import cs202_support.x86 as x86
 import constants
-import cfun
-import print_x86defs
+import ctup
 from interference_graph import InterferenceGraph
 
 comparisons = ['eq', 'gt', 'gte', 'lt', 'lte']
@@ -17,7 +16,6 @@ global_logging = False
 global_values = ['free_ptr', 'fromspace_end']
 
 tuple_var_types = {}
-function_names = set()
 
 
 def log(label, value):
@@ -51,19 +49,11 @@ def gensym(x):
 # op     ::= "add" | "sub" | "mult" | "not" | "or" | "and" | "eq" | "gt" | "gte" | "lt" | "lte"
 #          | "tuple" | "subscript"
 # Expr   ::= Var(x) | Constant(n) | Prim(op, List[Expr]) | Begin(Stmts, Expr)
-#          | Call(Expr, List[Expr])
 # Stmt   ::= Assign(x, Expr) | Print(Expr) | If(Expr, Stmts, Stmts) | While(Expr, Stmts)
-#          | Return(Expr) | FunctionDef(str, List[Tuple[str, type]], List[Stmt], type)
 # Stmts  ::= List[Stmt]
-# LFun   ::= Program(Stmts)
+# LWhile ::= Program(Stmts)
 
-@dataclass
-class Callable:
-    args: List[type]
-    output_type: type
-
-
-TEnv = Dict[str, Callable | Tuple | type]
+TEnv = Dict[str, type]
 
 
 def typecheck(program: Program) -> Program:
@@ -101,12 +91,6 @@ def typecheck(program: Program) -> Program:
 
     def tc_exp(e: Expr, env: TEnv) -> type:
         match e:
-            case Call(func, args):
-                func_type = [tc_exp(a, env) for a in args]
-                callable_func = tc_exp(func, env)
-                assert func_type == callable_func.args
-                return callable_func.output_type
-
             case Var(x):
                 if x in global_values:
                     return int
@@ -142,27 +126,6 @@ def typecheck(program: Program) -> Program:
 
     def tc_stmt(s: Stmt, env: TEnv):
         match s:
-            case FunctionDef(name, params, body_stmts, return_type):
-                param_types = []
-                for p in params:
-                    param_types.append(p[1])  # The type is always the second parameter
-                env[name] = Callable(param_types, return_type)
-
-                new_env = env.copy()
-                new_env['retval'] = return_type
-
-                for p in params:
-                    new_env[p[0]] = p[1]
-
-                tc_stmts(body_stmts, new_env)
-                for e in new_env:
-                    if isinstance(new_env[e], tuple):
-                        tuple_var_types[e] = new_env[e]
-                function_names.add(name)
-
-            case Return(e):
-                assert tc_exp(e, env) == env['retval']
-
             case While(condition, body_stmts):
                 assert tc_exp(condition, env) == bool
                 tc_stmts(body_stmts, env)
@@ -199,11 +162,9 @@ def typecheck(program: Program) -> Program:
 # op     ::= "add" | "sub" | "mult" | "not" | "or" | "and" | "eq" | "gt" | "gte" | "lt" | "lte"
 #          | "tuple" | "subscript"
 # Expr   ::= Var(x) | Constant(n) | Prim(op, List[Expr])
-#          | Call(Expr, List[Expr])
 # Stmt   ::= Assign(x, Expr) | Print(Expr) | If(Expr, Stmts, Stmts) | While(Expr, Stmts)
-#          | Return(Expr) | FunctionDef(str, List[Tuple[str, type]], List[Stmt], type)
 # Stmts  ::= List[Stmt]
-# LFun   ::= Program(Stmts)
+# LWhile ::= Program(Stmts)
 
 def rco(prog: Program) -> Program:
     """
@@ -215,17 +176,12 @@ def rco(prog: Program) -> Program:
 
     def rco_stmt(stmt: Stmt, bindings: Dict[str, Expr]) -> Stmt:
         match stmt:
-            case FunctionDef(name, params, body_stmts, return_type):
-                new = rco_stmts(body_stmts)
-                return FunctionDef(name, params, new, return_type)
-
             case Assign(x, e1):
                 new_e1 = rco_exp(e1, bindings)
                 return Assign(x, new_e1)
             case Print(e1):
                 new_e1 = rco_exp(e1, bindings)
                 return Print(new_e1)
-
             case While(condition, body_stmts):
                 condition_bindings = {}
                 condition_exp = rco_exp(condition, condition_bindings)
@@ -243,10 +199,6 @@ def rco(prog: Program) -> Program:
                 return If(new_condition,
                           new_then_stmts,
                           new_else_stmts)
-            case Return(e):
-                new_e = rco_exp(e, bindings)
-                return Return(new_e)
-
             case _:
                 raise Exception('rco_stmt', stmt)
 
@@ -267,11 +219,7 @@ def rco(prog: Program) -> Program:
     def rco_exp(e: Expr, bindings: Dict[str, Expr]) -> Expr:
         match e:
             case Var(x):
-                if x in function_names:
-                    tmp1 = gensym("tmp")
-                    return Var(tmp1)
-                else:
-                    return Var(x)
+                return Var(x)
             case Constant(i):
                 return Constant(i)
             case Prim(op, args):
@@ -280,17 +228,6 @@ def rco(prog: Program) -> Program:
                 new_v = gensym('tmp')
                 bindings[new_v] = new_e
                 return Var(new_v)
-            case Call(func, args):
-                new_a = [rco_exp(e, bindings) for e in args]
-                new_f = rco_exp(func, bindings)
-                bindings[new_f.name] = func
-
-                new_e = Call(new_f, new_a)
-                new_v = gensym('tmp')
-                bindings[new_v] = new_e
-
-                return Var(new_v)
-
             case _:
                 raise Exception('rco_exp', e)
 
@@ -303,11 +240,9 @@ def rco(prog: Program) -> Program:
 # op     ::= "add" | "sub" | "mult" | "not" | "or" | "and" | "eq" | "gt" | "gte" | "lt" | "lte"
 #          | "tuple" | "subscript"
 # Expr   ::= Var(x) | Constant(n) | Prim(op, List[Expr])
-#          | Call(Expr, List[Expr])
 # Stmt   ::= Assign(x, Expr) | Print(Expr) | If(Expr, Stmts, Stmts) | While(Begin(Stmts, Expr), Stmts)
-#          | Return(Expr) | FunctionDef(str, List[Tuple[str, type]], List[Stmt], type)
 # Stmts  ::= List[Stmt]
-# LFun   ::= Program(Stmts)
+# LWhile ::= Program(Stmts)
 
 def expose_alloc(prog: Program) -> Program:
     """
@@ -348,8 +283,6 @@ def expose_alloc(prog: Program) -> Program:
 
     def ea_stmt(stmt: Stmt) -> List[Stmt]:
         match stmt:
-            case FunctionDef(name, params, body_stmts, return_type):
-                return [FunctionDef(name, params, ea_stmts(body_stmts), return_type)]
             case If(cond, then_stmts, else_stmts):
                 return [If(cond, ea_stmts(then_stmts), ea_stmts(else_stmts))]
             case While(Begin(s1, cond), s2):
@@ -391,174 +324,110 @@ def expose_alloc(prog: Program) -> Program:
 #          | "subscript" | "allocate" | "collect" | "tuple_set"
 # Atm    ::= Var(x) | Constant(n)
 # Expr   ::= Atm | Prim(op, List[Expr])
-#          | Call(Expr, List[Expr])
 # Stmt   ::= Assign(x, Expr) | Print(Expr) | If(Expr, Stmts, Stmts) | While(Begin(Stmts, Expr), Stmts)
-#          | Return(Expr) | FunctionDef(str, List[Tuple[str, type]], List[Stmt], type)
 # Stmts  ::= List[Stmt]
-# LFun   ::= Program(Stmts)
+# LWhile ::= Program(Stmts)
 
-def explicate_control(prog: Program) -> cfun.CProgram:
+def explicate_control(prog: Program) -> ctup.CProgram:
     """
-    Transforms a Ltup Expression into a Ctup program.
-    :param prog: A Ltup Expression
+    Transforms an Ltup Expression into a Ctup program.
+    :param prog: An Ltup Expression
     :return: A Ctup Program
     """
 
     # the basic blocks of the program
-    basic_blocks: Dict[str, List[cfun.Stmt]] = {}
-    functions: List[cfun.CFunctionDef] = []
-    current_function = 'main'
+    basic_blocks: Dict[str, List[ctup.Stmt]] = {}
 
     # create a new basic block to hold some statements
     # generates a brand-new name for the block and returns it
-    def create_block(stmts: List[cfun.Stmt]) -> str:
-        # Add function name as a prefix to the label
-        label = current_function + gensym('label')
+    def create_block(stmts: List[ctup.Stmt]) -> str:
+        label = gensym('label')
         basic_blocks[label] = stmts
         return label
 
-    def explicate_atm(e: Expr) -> cfun.Atm:
+    def explicate_atm(e: Expr) -> ctup.Atm:
         match e:
             case Var(x):
-                return cfun.Var(x)
+                return ctup.Var(x)
             case Constant(c):
-                return cfun.Constant(c)
+                return ctup.Constant(c)
             case _:
                 raise RuntimeError(e)
 
-    def explicate_exp(e: Expr) -> cfun.Expr:
+    def explicate_exp(e: Expr) -> ctup.Expr:
         match e:
-            case Call(func, args):
-                new_args = [explicate_atm(a) for a in args]
-                return cfun.Call(explicate_atm(func), new_args)
             case Prim(op, args):
                 new_args = [explicate_atm(a) for a in args]
-                return cfun.Prim(op, new_args)
+                return ctup.Prim(op, new_args)
             case _:
                 return explicate_atm(e)
 
-    def ec_function(name: str, params: List[Tuple[str, type]],
-                    body_stmts: List[Stmt], return_type: type) -> cfun.CFunctionDef:
-        # Save basic blocks and current function so they can be restored at the end
-        # Nonlocal looks to outside the function scope instead of the global script scope
-        nonlocal basic_blocks
-        nonlocal current_function
-        old_basic_blocks = basic_blocks
-        old_current_function = current_function
-        basic_blocks = {}
-        current_function = name
-
-        # Call ec_stmts on body statments with the continuation Return(0)
-        # but the continuation should only be Return(0) for main?
-
-        new_bod = explicate_stmts(body_stmts, [cfun.Return(cfun.Constant(0))])
-
-        # Set basic_blocks[name+'start'] to the result
-        basic_blocks[name + 'start'] = new_bod
-
-        # Construct new FunctionDef and append it to functions
-        # Second param is args, a list of strings but params is type List[tuple[str, type]]
-        # So we have to deconstruct this, start by looping through each param which is a tuple
-        # and only grab the first item which is the string
-        new_params = [t[0] for t in params]
-        new_func = cfun.CFunctionDef(name, new_params, basic_blocks)
-        functions.append(new_func)
-
-        # Restore basic blocks and current_function
-        basic_blocks = old_basic_blocks
-        current_function = old_current_function
-
-        return new_func
-
-    def explicate_stmt(stmt: Stmt, cont: List[cfun.Stmt]) -> List[cfun.Stmt]:
+    def explicate_stmt(stmt: Stmt, cont: List[ctup.Stmt]) -> List[ctup.Stmt]:
         match stmt:
-            case Return(e):
-                # New case alert!
-                new_stmt: List[cfun.Stmt] = [cfun.Return(explicate_atm(e))]
-                return new_stmt + cont
-            case FunctionDef(name, params, body_stmts, return_type):
-                ec_function(name, params, body_stmts, return_type)
-                return cont
             case Assign(x, exp):
                 new_exp = explicate_exp(exp)
-                new_stmt: List[cfun.Stmt] = [cfun.Assign(x, new_exp)]
+                new_stmt: List[ctup.Stmt] = [ctup.Assign(x, new_exp)]
                 return new_stmt + cont
             case Print(exp):
                 new_exp = explicate_atm(exp)
-                new_stmt: List[cfun.Stmt] = [cfun.Print(new_exp)]
+                new_stmt: List[ctup.Stmt] = [ctup.Print(new_exp)]
                 return new_stmt + cont
             case While(Begin(condition_stmts, condition_exp), body_stmts):
                 cont_label = create_block(cont)
-                test_label = gensym('current_function' + 'loop_label')
-                body_label = create_block(explicate_stmts(body_stmts, [cfun.Goto(test_label)]))
-                test_stmts = [cfun.If(explicate_exp(condition_exp),
-                                      cfun.Goto(body_label),
-                                      cfun.Goto(cont_label))]
+                test_label = gensym('loop_label')
+                body_label = create_block(explicate_stmts(body_stmts, [ctup.Goto(test_label)]))
+                test_stmts = [ctup.If(explicate_exp(condition_exp),
+                                      ctup.Goto(body_label),
+                                      ctup.Goto(cont_label))]
                 basic_blocks[test_label] = explicate_stmts(condition_stmts, test_stmts)
-                return [cfun.Goto(test_label)]
+                return [ctup.Goto(test_label)]
             case If(condition, then_stmts, else_stmts):
                 cont_label = create_block(cont)
-                e2_label = create_block(explicate_stmts(then_stmts, [cfun.Goto(cont_label)]))
-                e3_label = create_block(explicate_stmts(else_stmts, [cfun.Goto(cont_label)]))
-                return [cfun.If(explicate_exp(condition),
-                                cfun.Goto(e2_label),
-                                cfun.Goto(e3_label))]
+                e2_label = create_block(explicate_stmts(then_stmts, [ctup.Goto(cont_label)]))
+                e3_label = create_block(explicate_stmts(else_stmts, [ctup.Goto(cont_label)]))
+                return [ctup.If(explicate_exp(condition),
+                                ctup.Goto(e2_label),
+                                ctup.Goto(e3_label))]
 
             case _:
                 raise RuntimeError(stmt)
 
-    def explicate_stmts(stmts: List[Stmt], cont: List[cfun.Stmt]) -> List[cfun.Stmt]:
+    def explicate_stmts(stmts: List[Stmt], cont: List[ctup.Stmt]) -> List[ctup.Stmt]:
         for s in reversed(stmts):
             cont = explicate_stmt(s, cont)
         return cont
 
-    new_body = [cfun.Return(cfun.Constant(0))]
+    new_body = [ctup.Return(ctup.Constant(0))]
     new_body = explicate_stmts(prog.stmts, new_body)
-    basic_blocks['mainstart'] = new_body
-    functions.append(cfun.CFunctionDef('main', [], basic_blocks))
 
-    return cfun.CProgram(functions)
+    basic_blocks['start'] = new_body
+    return ctup.CProgram(basic_blocks)
 
 
 ##################################################
 # select-instructions
 ##################################################
-# op           ::= "add" | "sub" | "mult" | "not" | "or" | "and" | "eq" | "gt" | "gte" | "lt" | "lte"
-#                | "subscript" | "allocate" | "collect" | "tuple_set"
-# Atm          ::= Var(x) | Constant(n)
-# Expr         ::= Atm | Prim(op, List[Expr])
-# Stmt         ::= Assign(x, Expr) | Print(Expr)
-#                | If(Expr, Goto(label), Goto(label)) | Goto(label) | Return(Expr)
-# Stmts        ::= List[Stmt]
-# CFunctionDef ::= CFunctionDef(name, List[str], Dict[label, Stmts])
-# Cfun         ::= CProgram(List[CFunctionDef])
+# op    ::= "add" | "sub" | "mult" | "not" | "or" | "and" | "eq" | "gt" | "gte" | "lt" | "lte"
+#         | "subscript" | "allocate" | "collect" | "tuple_set"
+# Atm   ::= Var(x) | Constant(n)
+# Expr  ::= Atm | Prim(op, List[Expr])
+# Stmt  ::= Assign(x, Expr) | Print(Expr)
+#        | If(Expr, Goto(label), Goto(label)) | Goto(label) | Return(Expr)
+# Stmts ::= List[Stmt]
+# Ctup   ::= CProgram(Dict[label, Stmts])
 
-@dataclass(frozen=True, eq=True)
-class X86FunctionDef(AST):
-    label: str
-    blocks: Dict[str, List[x86.Instr]]
-    stack_space: Tuple[int, int]
-
-
-@dataclass(frozen=True, eq=True)
-class X86ProgramDefs(AST):
-    defs: List[X86FunctionDef]
-
-
-def select_instructions(prog: cfun.CProgram) -> X86ProgramDefs:
+def select_instructions(prog: ctup.CProgram) -> x86.X86Program:
     """
     Transforms a Ltup program into a pseudo-x86 assembly program.
     :param prog: a Ltup program
     :return: a pseudo-x86 program
     """
-    current_function = 'main'
-    param_regs = ['rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9']
 
-    def si_atm(a: cfun.Expr) -> x86.Arg:
+    def si_atm(a: ctup.Expr) -> x86.Arg:
         match a:
-            case cfun.Constant(i):
+            case ctup.Constant(i):
                 return x86.Immediate(int(i))
-            case cfun.Var(x):
+            case ctup.Var(x):
                 if x in global_values:
                     return x86.GlobalVal(x)
                 else:
@@ -566,7 +435,7 @@ def select_instructions(prog: cfun.CProgram) -> X86ProgramDefs:
             case _:
                 raise Exception('si_atm', a)
 
-    def si_stmts(stmts: List[cfun.Stmt]) -> List[x86.Instr]:
+    def si_stmts(stmts: List[ctup.Stmt]) -> List[x86.Instr]:
         instrs = []
 
         for stmt in stmts:
@@ -578,41 +447,27 @@ def select_instructions(prog: cfun.CProgram) -> X86ProgramDefs:
 
     binop_instrs = {'add': 'addq', 'sub': 'subq', 'mult': 'imulq', 'and': 'andq', 'or': 'orq'}
 
-    def si_stmt(stmt: cfun.Stmt) -> List[x86.Instr]:
+    def si_stmt(stmt: ctup.Stmt) -> List[x86.Instr]:
         match stmt:
-            case cfun.Assign(x, cfun.Var(f)) if f in function_names:
-                if f in function_names:
-                    return [x86.NamedInstr('leaq', [x86.GlobalVal(f), x86.Var(x)])]
-
-            case cfun.Assign(x, cfun.Call(fun, args)):
-                instrs = []
-
-                for a, r in zip(args, constants.argument_registers):
-                    instrs.append(x86.NamedInstr('movq', [si_atm(a), x86.Reg(r)]))
-
-                instrs.append(x86.IndirectCallq(si_atm(fun), 0))
-                instrs.append(x86.NamedInstr('movq', [x86.Reg('rax'), x86.Var(x)]))
-                return instrs
-
-            case cfun.Assign(x, cfun.Prim('allocate', [cfun.Constant(num_bytes), cfun.Constant(tag)])):
+            case ctup.Assign(x, ctup.Prim('allocate', [ctup.Constant(num_bytes), ctup.Constant(tag)])):
                 return [x86.NamedInstr('movq', [x86.GlobalVal('free_ptr'), x86.Var(x)]),
                         x86.NamedInstr('addq', [x86.Immediate(num_bytes), x86.GlobalVal('free_ptr')]),
                         x86.NamedInstr('movq', [x86.Var(x), x86.Reg('r11')]),
                         x86.NamedInstr('movq', [x86.Immediate(tag), x86.Deref('r11', 0)])]
-            case cfun.Assign(_, cfun.Prim('tuple_set', [cfun.Var(x), cfun.Constant(offset), atm1])):
+            case ctup.Assign(_, ctup.Prim('tuple_set', [ctup.Var(x), ctup.Constant(offset), atm1])):
                 offset_bytes = 8 * (offset + 1)
                 return [x86.NamedInstr('movq', [x86.Var(x), x86.Reg('r11')]),
                         x86.NamedInstr('movq', [si_atm(atm1), x86.Deref('r11', offset_bytes)])]
-            case cfun.Assign(x, cfun.Prim('subscript', [atm1, cfun.Constant(offset)])):
+            case ctup.Assign(x, ctup.Prim('subscript', [atm1, ctup.Constant(offset)])):
                 offset_bytes = 8 * (offset + 1)
                 return [x86.NamedInstr('movq', [si_atm(atm1), x86.Reg('r11')]),
                         x86.NamedInstr('movq', [x86.Deref('r11', offset_bytes), x86.Var(x)])]
-            case cfun.Assign(_, cfun.Prim('collect', [cfun.Constant(num_bytes)])):
+            case ctup.Assign(_, ctup.Prim('collect', [ctup.Constant(num_bytes)])):
                 return [x86.NamedInstr('movq', [x86.Reg('r15'), x86.Reg('rdi')]),
                         x86.NamedInstr('movq', [x86.Immediate(num_bytes), x86.Reg('rsi')]),
                         x86.Callq('collect')]
 
-            case cfun.Assign(x, cfun.Prim(op, [atm1, atm2])):
+            case ctup.Assign(x, ctup.Prim(op, [atm1, atm2])):
                 if op in binop_instrs:
                     return [x86.NamedInstr('movq', [si_atm(atm1), x86.Reg('rax')]),
                             x86.NamedInstr(binop_instrs[op], [si_atm(atm2), x86.Reg('rax')]),
@@ -624,93 +479,47 @@ def select_instructions(prog: cfun.CProgram) -> X86ProgramDefs:
 
                 else:
                     raise Exception('si_stmt failed op', op)
-            case cfun.Assign(x, cfun.Prim('not', [atm1])):
+            case ctup.Assign(x, ctup.Prim('not', [atm1])):
                 return [x86.NamedInstr('movq', [si_atm(atm1), x86.Var(x)]),
                         x86.NamedInstr('xorq', [x86.Immediate(1), x86.Var(x)])]
-            case cfun.Assign(x, atm1):
+            case ctup.Assign(x, atm1):
                 return [x86.NamedInstr('movq', [si_atm(atm1), x86.Var(x)])]
-            case cfun.Print(atm1):
+            case ctup.Print(atm1):
                 return [x86.NamedInstr('movq', [si_atm(atm1), x86.Reg('rdi')]),
                         x86.Callq('print_int')]
-            case cfun.Return(atm1):
+            case ctup.Return(atm1):
                 return [x86.NamedInstr('movq', [si_atm(atm1), x86.Reg('rax')]),
                         x86.Jmp('conclusion')]
-            case cfun.Goto(label):
+            case ctup.Goto(label):
                 return [x86.Jmp(label)]
-            case cfun.If(a, cfun.Goto(then_label), cfun.Goto(else_label)):
+            case ctup.If(a, ctup.Goto(then_label), ctup.Goto(else_label)):
                 return [x86.NamedInstr('cmpq', [si_atm(a), x86.Immediate(1)]),
                         x86.JmpIf('e', then_label),
                         x86.Jmp(else_label)]
             case _:
                 raise Exception('si_stmt', stmt)
 
-    def si_def(d: cfun.CFunctionDef) -> X86FunctionDef:
-        nonlocal current_function
-        current_function = d.name
-        new_blocks = {}
-
-        for b in d.blocks:
-            new_stmts = []
-
-            if 'start' in b:
-                for a, r in zip(d.args, constants.argument_registers):
-                    new_stmts.append(x86.NamedInstr('movq', [x86.Reg(r), x86.Var(a)]))
-
-            new_stmts.extend(si_stmts(d.blocks[b]))
-            new_blocks[b] = new_stmts
-
-        return X86FunctionDef(current_function, new_blocks, (None, None))
-
-    # basic_blocks = {label: si_stmts(block) for (label, block) in prog.blocks.items()}
-    functions = []
-    for d in prog.defs:
-        functions.append(si_def(d))
-    return X86ProgramDefs(functions)
+    basic_blocks = {label: si_stmts(block) for (label, block) in prog.blocks.items()}
+    return x86.X86Program(basic_blocks)
 
 
 ##################################################
 # allocate-registers
 ##################################################
-# Arg            ::= Immediate(i) | Reg(r) | ByteReg(r) | Var(x) | Deref(r, offset) | GlobalVal(x)
-# op             ::= 'addq' | 'subq' | 'imulq' | 'cmpq' | 'andq' | 'orq' | 'xorq' | 'movq' | 'movzbq'
-#                  | 'leaq'
-# cc             ::= 'e'| 'g' | 'ge' | 'l' | 'le'
-# Instr          ::= NamedInstr(op, List[Arg]) | Callq(label) | Retq()
-#                  | Jmp(label) | JmpIf(cc, label) | Set(cc, Arg)
-#                  | IndirectCallq(Arg)
-# Blocks         ::= Dict[label, List[Instr]]
-# X86FunctionDef ::= X86FunctionDef(name, Blocks)
-# X86ProgramDefs ::= List[X86FunctionDef]
+# Arg    ::= Immediate(i) | Reg(r) | ByteReg(r) | Var(x) | Deref(r, offset) | GlobalVal(x)
+# op     ::= 'addq' | 'subq' | 'imulq' | 'cmpq' | 'andq' | 'orq' | 'xorq' | 'movq' | 'movzbq'
+# cc     ::= 'e'| 'g' | 'ge' | 'l' | 'le'
+# Instr  ::= NamedInstr(op, List[Arg]) | Callq(label) | Retq()
+#         | Jmp(label) | JmpIf(cc, label) | Set(cc, Arg)
+# Blocks ::= Dict[label, List[Instr]]
+# X86    ::= X86Program(Blocks)
 
-Color = x86.Arg
-Coloring = Dict[x86.Var, x86.Arg]
-Saturation = Set[x86.Arg]
+Color = int
+Coloring = Dict[x86.Var, Color]
+Saturation = Set[Color]
 
 
-def allocate_registers(program: X86ProgramDefs) -> X86ProgramDefs:
-    """
-    Assigns homes to variables in the input program. Allocates registers and
-    stack locations as needed, based on a graph-coloring register allocation
-    algorithm.
-    :param program: A pseudo-x86 program.
-    :return: An x86 program, annotated with the number of bytes needed in stack
-    locations.
-    """
-    # call _allocate_registers for each function definition
-    new_defs = []
-    for d in program.defs:
-        mini_prog = x86.X86Program(d.blocks)
-        result_mini_program = _allocate_registers(d.label, mini_prog)
-        new_def = X86FunctionDef(d.label, result_mini_program.blocks, result_mini_program.stack_space)
-        new_defs.append(new_def)
-    new_prog = X86ProgramDefs(new_defs)
-    return new_prog
-
-
-# def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
-
-
-def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
+def allocate_registers(program: x86.X86Program) -> x86.X86Program:
     """
     Assigns homes to variables in the input program. Allocates registers and
     stack locations as needed, based on a graph-coloring register allocation
@@ -722,13 +531,12 @@ def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
 
     blocks = program.blocks
     all_vars: Set[x86.Var] = set()
-    live_before_sets = {name + 'conclusion': set()}
+    live_before_sets = {'conclusion': set()}
     for label in blocks:
         live_before_sets[label] = set()
 
     live_after_sets = {}
     homes: Dict[x86.Var, x86.Arg] = {}
-    live_before_sets['conclusion'] = set()
 
     # --------------------------------------------------
     # utilities
@@ -738,7 +546,7 @@ def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
             case x86.Immediate(i):
                 return set()
             case x86.Reg(r):
-                return {x86.Reg(r)}
+                return set()
             case x86.ByteReg(r):
                 return set()
             case x86.Var(x):
@@ -755,14 +563,14 @@ def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
         match i:
             case x86.NamedInstr(i, [e1, e2]) if i in ['movq', 'movzbq']:
                 return vars_arg(e1)
-            case x86.NamedInstr(i, [e1, e2]) if i in ['addq', 'subq', 'imulq', 'cmpq', 'andq', 'orq', 'xorq', 'leaq']:
+            case x86.NamedInstr(i, [e1, e2]) if i in ['addq', 'subq', 'imulq', 'cmpq', 'andq', 'orq', 'xorq']:
                 return vars_arg(e1).union(vars_arg(e2))
             case x86.Jmp(label) | x86.JmpIf(_, label):
                 # the variables that might be read after this instruction
                 # are the live-before variables of the destination block
                 return live_before_sets[label]
             case _:
-                if isinstance(i, (x86.Callq, x86.IndirectCallq, x86.Set)):
+                if isinstance(i, (x86.Callq, x86.Set)):
                     return set()
                 else:
                     raise Exception(i)
@@ -770,10 +578,10 @@ def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
     def writes_of(i: x86.Instr) -> Set[x86.Var]:
         match i:
             case x86.NamedInstr(i, [e1, e2]) \
-                if i in ['movq', 'movzbq', 'addq', 'subq', 'imulq', 'cmpq', 'andq', 'orq', 'xorq', 'leaq']:
+                if i in ['movq', 'movzbq', 'addq', 'subq', 'imulq', 'cmpq', 'andq', 'orq', 'xorq']:
                 return vars_arg(e2)
             case _:
-                if isinstance(i, (x86.Jmp, x86.JmpIf, x86.Callq, x86.IndirectCallq, x86.Set)):
+                if isinstance(i, (x86.Jmp, x86.JmpIf, x86.Callq, x86.Set)):
                     return set()
                 else:
                     raise Exception(i)
@@ -813,11 +621,11 @@ def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
     # --------------------------------------------------
     def bi_instr(e: x86.Instr, live_after: Set[x86.Var], graph: InterferenceGraph):
         match e:
-            case x86.Callq(l) | x86.IndirectCallq(l):
+            case x86.Callq(l):
                 for var in live_after:
                     for r in constants.caller_saved_registers:
                         graph.add_edge(x86.Reg(r), var)
-                    if var in tuple_var_types:
+                    if var.var in tuple_var_types:
                         for r in constants.callee_saved_registers:
                             graph.add_edge(x86.Reg(r), var)
             case _:
@@ -896,7 +704,7 @@ def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
             case x86.Set(cc, a1):
                 return x86.Set(cc, ah_arg(a1))
             case _:
-                if isinstance(e, (x86.Callq, x86.IndirectCallq, x86.Retq, x86.Jmp, x86.JmpIf)):
+                if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp, x86.JmpIf)):
                     return e
                 else:
                     raise Exception('ah_instr', e)
@@ -952,36 +760,21 @@ def _allocate_registers(name: str, program: x86.X86Program) -> x86.X86Program:
 ##################################################
 # patch-instructions
 ##################################################
-# Arg            ::= Immediate(i) | Reg(r) | ByteReg(r) | Var(x) | Deref(r, offset) | GlobalVal(x)
-# op             ::= 'addq' | 'subq' | 'imulq' | 'cmpq' | 'andq' | 'orq' | 'xorq' | 'movq' | 'movzbq'
-#                  | 'leaq'
-# cc             ::= 'e'| 'g' | 'ge' | 'l' | 'le'
-# Instr          ::= NamedInstr(op, List[Arg]) | Callq(label) | Retq()
-#                  | Jmp(label) | JmpIf(cc, label) | Set(cc, Arg)
-#                  | IndirectCallq(Arg)
-# Blocks         ::= Dict[label, List[Instr]]
-# X86FunctionDef ::= X86FunctionDef(name, Blocks)
-# X86ProgramDefs ::= List[X86FunctionDef]
+# Arg    ::= Immediate(i) | Reg(r) | ByteReg(r) | Deref(r, offset) | GlobalVal(x)
+# op     ::= 'addq' | 'subq' | 'imulq' | 'cmpq' | 'andq' | 'orq' | 'xorq' | 'movq' | 'movzbq'
+# cc     ::= 'e'| 'g' | 'ge' | 'l' | 'le'
+# Instr  ::= NamedInstr(op, List[Arg]) | Callq(label) | Retq()
+#         | Jmp(label) | JmpIf(cc, label) | Set(cc, Arg)
+# Blocks ::= Dict[label, List[Instr]]
+# X86    ::= X86Program(Blocks)
 
-def patch_instructions(program: X86ProgramDefs) -> X86ProgramDefs:
+def patch_instructions(program: x86.X86Program) -> x86.X86Program:
     """
     Patches instructions with two memory location inputs, using %rax as a temporary location.
     :param program: An x86 program.
     :return: A patched x86 program.
     """
-    # TODO: Follow same structure as register allocation
 
-    new_defs = []
-    for d in program.defs:
-        mini_prog = x86.X86Program(d.blocks)
-        result_mini_program = _patch_instructions(mini_prog)
-        new_def = X86FunctionDef(d.label, result_mini_program.blocks, result_mini_program.stack_space)
-        new_defs.append(new_def)
-    new_prog = X86ProgramDefs(new_defs)
-    return new_prog
-
-
-def _patch_instructions(program: x86.X86Program) -> x86.X86Program:
     def pi_instr(e: x86.Instr) -> List[x86.Instr]:
         match e:
             case x86.NamedInstr(i, [x86.Deref(r1, o1), x86.GlobalVal(x)]):
@@ -1000,7 +793,7 @@ def _patch_instructions(program: x86.X86Program) -> x86.X86Program:
                 return [x86.NamedInstr('movq', [x86.Immediate(i), x86.Reg('rax')]),
                         x86.NamedInstr('cmpq', [a1, x86.Reg('rax')])]
             case _:
-                if isinstance(e, (x86.Callq, x86.IndirectCallq, x86.Retq, x86.Jmp, x86.JmpIf, x86.NamedInstr, x86.Set)):
+                if isinstance(e, (x86.Callq, x86.Retq, x86.Jmp, x86.JmpIf, x86.NamedInstr, x86.Set)):
                     return [e]
                 else:
                     raise Exception('pi_instr', e)
@@ -1020,72 +813,44 @@ def _patch_instructions(program: x86.X86Program) -> x86.X86Program:
 ##################################################
 # Arg    ::= Immediate(i) | Reg(r) | ByteReg(r) | Deref(r, offset) | GlobalVal(x)
 # op     ::= 'addq' | 'subq' | 'imulq' | 'cmpq' | 'andq' | 'orq' | 'xorq' | 'movq' | 'movzbq'
-#          | 'leaq'
 # cc     ::= 'e'| 'g' | 'ge' | 'l' | 'le'
 # Instr  ::= NamedInstr(op, List[Arg]) | Callq(label) | Retq()
-#          | Jmp(label) | JmpIf(cc, label) | Set(cc, Arg)
-#          | IndirectCallq(Arg)
+#         | Jmp(label) | JmpIf(cc, label) | Set(cc, Arg)
 # Blocks ::= Dict[label, List[Instr]]
 # X86    ::= X86Program(Blocks)
 
-def prelude_and_conclusion(program: X86ProgramDefs) -> x86.X86Program:
+def prelude_and_conclusion(program: x86.X86Program) -> x86.X86Program:
     """
     Adds the prelude and conclusion for the program.
     :param program: An x86 program.
     :return: An x86 program, with prelude and conclusion.
     """
 
-    new_blocks = {}
-    for d in program.defs:
-        main_prog = x86.X86Program(d.blocks)
-        result_mini_program = _prelude_and_conclusion(d.label, main_prog)
-        new_blocks.update(result_mini_program.blocks)
-    return x86.X86Program(new_blocks)
-
-
-def _prelude_and_conclusion(name: str, program: x86.X86Program) -> x86.X86Program:
-    if program.stack_space is None:
-        stack_bytes = 0
-        root_stack_locations = 0
-    else:
-        stack_bytes, root_stack_locations = program.stack_space
+    stack_bytes, root_stack_locations = program.stack_space
 
     prelude = [x86.NamedInstr('pushq', [x86.Reg('rbp')]),
                x86.NamedInstr('movq', [x86.Reg('rsp'), x86.Reg('rbp')]),
-               x86.NamedInstr('pushq', [x86.Reg('r12')]),  # save callee-saved register
-               x86.NamedInstr('pushq', [x86.Reg('r13')]),  # save callee-saved register
-               x86.NamedInstr('pushq', [x86.Reg('r14')]),  # save callee-saved register
-               x86.NamedInstr('pushq', [x86.Reg('r15')]),  # save callee-saved register
                x86.NamedInstr('subq', [x86.Immediate(stack_bytes),
                                        x86.Reg('rsp')]),
+               x86.NamedInstr('movq', [x86.Immediate(constants.root_stack_size),
+                                       x86.Reg('rdi')]),
+               x86.NamedInstr('movq', [x86.Immediate(constants.heap_size),
+                                       x86.Reg('rsi')]),
+               x86.Callq('initialize'),
                x86.NamedInstr('movq', [x86.GlobalVal('rootstack_begin'), x86.Reg('r15')])]
-    if name == 'main':  # initialize heap only in main
-        prelude += [x86.NamedInstr('movq', [x86.Immediate(constants.root_stack_size),
-                                            x86.Reg('rdi')]),
-                    x86.NamedInstr('movq', [x86.Immediate(constants.heap_size),
-                                            x86.Reg('rsi')]),
-                    x86.Callq('initialize')]
-
     for offset in range(root_stack_locations):
         prelude += [x86.NamedInstr('movq', [x86.Immediate(0), x86.Deref('r15', 0)]),
                     x86.NamedInstr('addq', [x86.Immediate(8), x86.Reg('r15')])]
-    prelude += [x86.Jmp(name)]
+    prelude += [x86.Jmp('start')]
 
-    conclusion = [x86.Jmp(name + 'conclusion'),
-                  x86.NamedInstr('addq', [x86.Immediate(8 * root_stack_locations), x86.Reg('r15')]),
-                  # tear down root stack frame
-                  x86.NamedInstr('popq', [x86.Reg('r15')]),  # restore callee-saved register
-                  x86.NamedInstr('popq', [x86.Reg('r14')]),  # restore callee-saved register
-                  x86.NamedInstr('popq', [x86.Reg('r13')]),  # restore callee-saved register
-                  x86.NamedInstr('popq', [x86.Reg('r12')]),  # restore callee-saved register
-                  x86.NamedInstr('addq', [x86.Immediate(stack_bytes),
+    conclusion = [x86.NamedInstr('addq', [x86.Immediate(stack_bytes),
                                           x86.Reg('rsp')]),
                   x86.NamedInstr('popq', [x86.Reg('rbp')]),
                   x86.Retq()]
 
     new_blocks = program.blocks.copy()
     new_blocks['main'] = prelude
-    new_blocks[name + 'conclusion'] = conclusion
+    new_blocks['conclusion'] = conclusion
     return x86.X86Program(new_blocks, stack_space=program.stack_space)
 
 
@@ -1117,12 +882,10 @@ def run_compiler(s, logging=False):
         print('Concrete syntax:')
         if isinstance(current_program, x86.X86Program):
             print(x86.print_x86(current_program))
-        elif isinstance(current_program, X86ProgramDefs):
-            print(print_x86defs.print_x86_defs(current_program))
         elif isinstance(current_program, Program):
             print(print_program(current_program))
-        elif isinstance(current_program, cfun.CProgram):
-            print(cfun.print_program(current_program))
+        elif isinstance(current_program, ctup.CProgram):
+            print(ctup.print_program(current_program))
 
         print()
         print('Abstract syntax:')
@@ -1171,3 +934,4 @@ if __name__ == '__main__':
             except:
                 print('Error during compilation! **************************************************')
                 traceback.print_exception(*sys.exc_info())
+

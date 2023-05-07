@@ -26,7 +26,7 @@ for file_name in sorted(os.listdir('tests')):
                 ast = parse(program)
                 interpreter_result = eval_Lif(ast)
                 print('interpreter result:', interpreter_result)
-            
+
                 x86_program = run_compiler(program, logging=False)
                 emu = eval_x86.X86Emulator(logging=False)
                 x86_output = emu.eval_program(x86_program)
@@ -42,7 +42,7 @@ for file_name in sorted(os.listdir('tests')):
                     asm_file_name = 'tests/' + file_name + '.s'
                     with open(asm_file_name, 'w') as output_file:
                         output_file.write(x86_program)
-                    
+
                     # run gcc to compile the binary
                     gcc_result = subprocess.run(["gcc", "-g", "../runtime.o", asm_file_name],
                                                 text=True, capture_output=True)

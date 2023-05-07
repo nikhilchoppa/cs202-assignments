@@ -13,7 +13,7 @@ def extract_string(string, comp_pass):
 
 
 def process_file(file_path, local, debug, comp_pass):
-    result = subprocess.run(["python", f'{local}/compiler.py', file_path], capture_output=True, text=True)
+    result = subprocess.run(["python", f'{local}/compiler1.py', file_path], capture_output=True, text=True)
     
     my_output = result.stdout 
     local = extract_string(my_output, comp_pass)
