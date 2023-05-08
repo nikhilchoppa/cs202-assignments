@@ -1,4 +1,4 @@
-# Compiler Optimization using Machine Learning
+# Optimizing Compiler Performance using Linear Scan Register Allocation
 
 ## Introduction
 In modern compiler optimization, the register allocation process is crucial for efficient utilization of a processor's resources. Traditional register allocation techniques, such as graph coloring, have been effective in optimizing performance. However, with the advent of machine learning, new possibilities for optimization have emerged. In this project, we explore the application of machine learning to compare and optimize compiler performance by implementing a linear scan register allocation method alongside the traditional graph coloring method.
